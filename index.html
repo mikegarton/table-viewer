@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>table-viewer demo</title>
+<style>
+  :root {
+    --bg: #101114; --card: #1a1c21; --card2: #22252c; --line: #2c3038;
+    --ink: #e8e8e6; --dim: #bfe3ff; --faint: #ead9b0; --accent: #5aa8f0; --gold: #e0b34e;
+    --good: #6fc48d; --orange: #e5893f; --bad: #e25555; --mint: #7fe3b0; --yellow: #ffd166;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 12px 10px 60px; max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 2px; }
+  h2 { font-size: 18px; margin: 22px 0 8px; }
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 14px; }
+  .secbar { position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 5; display: flex; gap: 8px; align-items: center; }
+  .secbar select { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-height: 40px; }
+  section { display: none; } section.on { display: block; }
+</style>
+</head>
+<body>
+<h1>table-viewer demo</h1>
+<div class="sub">Two sample tables with no key and no server: a metric table with actions that only log, and a long-text registry. Spec: working_docs projects\table-viewer\table-viewer-spec.md.</div>
+<div class="secbar"><label for="secSel">Section</label><select id="secSel"><option value="channels">Channels (metric)</option><option value="rules">Rules (long-text)</option></select></div>
+<section data-sec="channels" class="on"><h2>Channels</h2><div id="channels"></div></section>
+<section data-sec="rules"><h2>Rules</h2><div id="rules"></div></section>
+<script src="table-viewer-v1.js"></script>
+<script>
+const sel = document.getElementById("secSel");
+function showSection(k) { document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.dataset.sec === k)); sel.value = k; try { localStorage.setItem("tv:demo:section", k); } catch (e) {} }
+sel.onchange = () => showSection(sel.value);
+showSection((() => { try { return localStorage.getItem("tv:demo:section") || "channels"; } catch (e) { return "channels"; } })());
+
+fetch("sample.json").then(r => r.json()).then(d => {
+  mountTable("#channels", d.channels, {
+    name: "channels", site: "demo", identity: "label", sort: { key: "nug_per_usd", dir: "desc" },
+    columns: [
+      { key: "label", label: "channel", render: (v, r) => v + (r.enabled === false ? ' <span style="color:var(--gold)">(not subscribed)</span>' : "") },
+      { key: "source", label: "source" },
+      { key: "nug_per_usd", label: "nug/$", decimals: 0 },
+      { key: "nug_per_item", label: "nug/item", decimals: 2 },
+      { key: "nug_per_month", label: "nug/mo", decimals: 1 },
+      { key: "taste_med", label: "taste med", decimals: 0 },
+      { key: "mentor_med", label: "mentor med", decimals: 0 },
+      { key: "nuggets", label: "nuggets", decimals: 0 },
+      { key: "rated_ge4", label: "≥4★", decimals: 0 },
+      { key: "cost_usd", label: "$", decimals: 2 },
+      { key: "videos_processed", label: "items", decimals: 0 },
+      { key: "channel_id", visible: false },
+      { key: "enabled", visible: false },
+    ],
+    actions: [
+      { label: "subscribe", when: r => r.enabled === false, route: "/subscribe", payload: ["channel_id"], guard: "arm", done: "✓ subscribed" },
+      { label: "unsub nuggets", when: r => r.enabled === true, route: "/unsubscribe", side: "pipeline", payload: ["channel_id"], guard: "arm", done: "✓ nuggets unsubbed" },
+    ],
+    request: async (action, row, body) => { console.log("demo request", action.route, body); return { ok: true, status: 200, json: async () => ({ ok: true }) }; },
+  });
+  mountTable("#rules", d.rules, {
+    name: "rules", site: "demo", identity: "key", sort: { key: "date", dir: "desc" },
+    columns: [
+      { key: "key", label: "key" }, { key: "name", label: "name" }, { key: "statement", label: "statement", text: "clip" },
+      { key: "binding", label: "binding" }, { key: "active", label: "active" }, { key: "date", label: "date" },
+    ],
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+# Line-ending determinism (working_docs projects/line-endings, 2026-08-29).
+# Default LF for all text; last matching rule wins.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
