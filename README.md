@@ -11,4 +11,6 @@ Files:
 
 Spec of record: `C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md` (draft 2, approved 2026-09-23), with its changelog, the project brief and the build decisions log beside it.
 
-First instances: the five metric tables of the nugget ops page (`C:\dev\nugget-review\ops\index.html`), which loads a byte-identical copy of the module from its own folder until this repo has a GitHub remote and a Pages site; then the copy gives way to the Pages address with the version in the file name.
+Repo and site, public since 2026-09-24 (ruling d7 a): `https://github.com/mikegarton/table-viewer`; the demo page and the module are served at `https://mikegarton.github.io/table-viewer/`.
+
+First instances: the five metric tables of the nugget ops page (`C:\dev\nugget-review\ops\index.html`), which loads the module from `https://mikegarton.github.io/table-viewer/table-viewer-v1.js`; the version in the file name pins the call shape, and the name takes the next number when the call changes.
