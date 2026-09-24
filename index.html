@@ -11,10 +11,12 @@
     --good: #6fc48d; --orange: #e5893f; --bad: #e25555; --mint: #7fe3b0; --yellow: #ffd166;
   }
   * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 12px 10px 60px; max-width: 900px; margin: 0 auto; }
+  body { background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 12px 10px 60px; }
   h1 { font-size: 22px; margin-bottom: 2px; }
   h2 { font-size: 18px; margin: 22px 0 8px; }
-  .sub { color: var(--dim); font-size: 15px; margin-bottom: 14px; }
+  /* Page width (spec G, ruling page-max-width b): tables use the window's
+     full width; prose stays at most 900 px wide. */
+  .sub { color: var(--dim); font-size: 15px; margin-bottom: 14px; max-width: 900px; }
   .secbar { position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 5; display: flex; gap: 8px; align-items: center; }
   .secbar select { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-height: 40px; }
   section { display: none; } section.on { display: block; }

@@ -1,6 +1,7 @@
 /* table-viewer v1 — one table, any shape.
    Spec of record: C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md
-   (Mike's rulings d1 to d39, 2026-09-22). Section letters below cite it.
+   (draft 2: Mike's rulings d1 to d39 of 2026-09-22 and the rulings of
+   2026-09-23 cited by slug). Section letters below cite it.
 
    mountTable(container, rows, spec) -> { update(rows), state, destroy() }
      container: element. rows: array of row objects. spec (optional, section B):
@@ -16,13 +17,18 @@
   "use strict";
   const VERSION = "1";
   const STATE_VERSION = 1;
-  const ENUM_MAX_DISTINCT = 12;          // d8 a: the sheet_shape.py rule
-  const IDENTITY_OWN_LINE_MIN_CHARS = 24; // E9; measured on the phone at build
-  const ARM_SECONDS = 5;                  // E12: an armed button disarms after this
-  const TEXT_FLOOR_PX = 16;               // G: Text is black and big enough
-  const ACTIONS_IN_ROW_MIN_PX = 600;      // below this width the action buttons sit in the fold line
-  const FOLD_W = 110, ACTS_W = 150;       // fit reserve for the fold button column and the action column
-  const FOLD_W_NARROW = 64;               // the compact fold button ("+22") below ACTIONS_IN_ROW_MIN_PX
+  // Section P lists every constant with its rule and effect; the ops page's
+  // Code constants table lists the same rows.
+  const ENUM_MAX_DISTINCT = 12;            // d8 a: the sheet_shape.py rule
+  const IDENTITY_OWN_LINE_MIN_CHARS = 24;  // E9 case 2
+  const ARM_SECONDS = 5;                   // E12: an armed button disarms after this
+  const TEXT_FLOOR_PX = 16;                // G: Text is black and big enough
+  const PHONE_LAYOUT_BELOW_PX = 600;       // E8 rule 3, E9 case 1: Android's compact window width class ends at 600 dp
+  const IDENTITY_MIN_PERCENT_PHONE = 30;   // E8 rule 3; rule: none on record
+  const IDENTITY_MIN_PX = 80;              // E8 rule 3; rule: none on record
+  const TEXT_NEED_MAX_CHARS = 40;          // E8 rule 2; rule: none on record
+  const CLIP_CHARS = 22;                   // E8 rule 2; rule: none on record
+  const REDRAW_MIN_WIDTH_CHANGE_PX = 24;   // E8; rule: none on record
 
   // ---------- styles, injected once ----------
   const CSS = `
@@ -51,6 +57,7 @@
 .tv-panel .tv-prow span.tv-plabel { min-width: 9em; }
 .tv-panel input[type=number] { width: 7em; }
 .tv-panel label.tv-check { display: flex; gap: 8px; align-items: center; padding: 4px 0; min-height: 40px; }
+.tv-panel label.tv-all { font-weight: 600; border-bottom: 1px solid var(--tv-line); }
 .tv-panel input[type=checkbox] { width: 22px; height: 22px; min-height: 0; }
 .tv-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .tv-table th, .tv-table td { overflow-wrap: break-word; }
@@ -83,6 +90,7 @@
 .tv-mark-warn { color: var(--tv-yellow); }
 .tv-mark-bad { color: var(--tv-bad); }
 .tv-mark-good { color: var(--tv-good); }
+.tv-probe { position: absolute; left: 0; top: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 `;
   let cssDone = false;
   function ensureCss() {
@@ -192,6 +200,18 @@
     if (m) inner = '<span class="tv-mark-' + esc(m) + '">' + inner + "</span>";
     return inner;
   }
+  // The text a cell shows, for measuring (E8 rule 1). A render hook's HTML is
+  // read through an inert template, so nothing in it loads or runs.
+  const inert = typeof document !== "undefined" ? document.createElement("template") : null;
+  function plainCell(col, row) {
+    const v = row[col.key];
+    if (col.render) { inert.innerHTML = String(col.render(v, row) ?? ""); return inert.content.textContent || ""; }
+    if (isBlank(v)) return "—";
+    if (col.kind === "number") { const n = asNumber(v); return n === null ? String(v) : n.toLocaleString(undefined, { minimumFractionDigits: col.decimals, maximumFractionDigits: col.decimals }); }
+    if (col.kind === "date") { const s = String(v); return s.length > 10 && /T/.test(s) ? s.slice(0, 10) : s; }
+    if (col.kind === "bool") { const b = asBool(v); return b === null ? String(v) : b ? "yes" : "no"; }
+    return String(v);
+  }
   function compareBy(col, dir) {
     const sign = dir === "asc" ? 1 : -1;
     return (a, b) => {
@@ -204,6 +224,32 @@
       return sign * String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" });
     };
   }
+
+  // ---------- measurement (E8 rule 1) ----------
+  // Widths come from a canvas at the computed fonts of a hidden probe table
+  // inside the container, times a per-table scale taken from drawn number
+  // cells (see calibrate), so a device that draws text larger than its CSS
+  // size is measured as drawn.
+  let canvasCtx = null;
+  const canvasWidths = new Map();                                 // raw canvas widths by font and text
+  function canvasWidth(font, s) {
+    const k = font + "\u0001" + s;
+    let v = canvasWidths.get(k);
+    if (v === undefined) {
+      if (!canvasCtx) canvasCtx = document.createElement("canvas").getContext("2d");
+      canvasCtx.font = font; v = canvasCtx.measureText(s).width; canvasWidths.set(k, v);
+    }
+    return v;
+  }
+  function fontOf(node) { const s = getComputedStyle(node); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; }
+  function sideSpace(node, withMargins) {
+    const s = getComputedStyle(node);
+    const parts = ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"].concat(withMargins ? ["marginLeft", "marginRight"] : []);
+    return parts.reduce((a, p) => a + (parseFloat(s[p]) || 0), 0);
+  }
+  // A header breaks at spaces and after a slash (E8 rule 2); an identity at spaces.
+  const headerWords = (s) => String(s).split(/\s+/).flatMap((w) => w.replace(/\//g, "/\u0001").split("\u0001")).filter(Boolean);
+  const spaceWords = (s) => String(s).split(/\s+/).filter(Boolean);
 
   // ---------- actions (E12, E13) ----------
   function matches(action, row) {
@@ -281,10 +327,14 @@
     if (!st.s_dir) st.s_dir = defaultSort().dir;
     const persist = () => saveState(spec, st);
 
-    // dom skeleton
+    // dom skeleton; the probe at the end carries the fonts and paddings the
+    // fit measures with (E8 rule 1)
     el.innerHTML = '<div class="tv-row tv-row1"></div><div class="tv-panel tv-narrow"></div>' +
       '<div class="tv-row tv-row2"></div><div class="tv-row tv-row3"></div><div class="tv-panel tv-columns"></div>' +
-      '<div class="tv-count"></div><div class="tv-wrap"></div>';
+      '<div class="tv-count"></div><div class="tv-wrap"></div>' +
+      '<div class="tv-probe" aria-hidden="true"><table class="tv-table"><thead><tr><th>M</th></tr></thead><tbody><tr>' +
+      '<td class="tv-num">0</td><td class="tv-wrap">x<button type="button" class="tv-fold" tabindex="-1">+0</button></td>' +
+      '<td class="tv-acts"><button type="button" tabindex="-1">x</button></td></tr></tbody></table></div>';
     const q = (s) => el.querySelector(s);
 
     const enumCols = () => cols.filter((c) => c.kind === "enum");
@@ -355,98 +405,175 @@
       q("#tvDir").onclick = () => { st.s_dir = st.s_dir === "asc" ? "desc" : "asc"; persist(); render(); };
       const fb = q("#tvFold"); if (fb) fb.onclick = () => { st.foldMode = st.foldMode === "closed" ? "open" : "closed"; st.foldExceptions.clear(); render(); };
 
-      // row 3: columns chip (F.4) and its panel (E5)
-      q(".tv-row3").innerHTML = '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvCols" class="' + (st.hidden.size ? "user-set" : "") + '">columns' + (st.panel === "columns" ? " ▴" : "") + "</button></div>";
+      // row 3: columns chip (F.4) and its panel with the All line (E5)
+      const idk = identityKey();
+      const listed = cols.filter((c) => c.key !== idk);
+      const atDefault = listed.every((c) => st.hidden.has(c.key) === !c.visible);   // grey at the default set, mint otherwise
+      q(".tv-row3").innerHTML = '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvCols" class="' + (atDefault ? "" : "user-set") + '">columns' + (st.panel === "columns" ? " ▴" : "") + "</button></div>";
       q("#tvCols").onclick = () => { st.panel = st.panel === "columns" ? null : "columns"; render(); };
       const cp = q(".tv-columns"); cp.classList.toggle("open", st.panel === "columns");
-      const idk = identityKey();
-      cp.innerHTML = cols.filter((c) => c.key !== idk).map((c) => '<label class="tv-check"><input type="checkbox" data-k="' + esc(c.key) + '"' + (st.hidden.has(c.key) ? "" : " checked") + "> " + esc(c.label) + (c.unit ? " " + esc(c.unit) : "") + "</label>").join("");
-      cp.querySelectorAll("input").forEach((inp) => { inp.onchange = () => { if (inp.checked) st.hidden.delete(inp.dataset.k); else st.hidden.add(inp.dataset.k); persist(); render(); }; });
+      const onCount = listed.filter((c) => !st.hidden.has(c.key)).length;
+      cp.innerHTML = (listed.length ? '<label class="tv-check tv-all"><input type="checkbox" data-all="1"' + (onCount === listed.length ? " checked" : "") + "> All</label>" : "") +
+        listed.map((c) => '<label class="tv-check"><input type="checkbox" data-k="' + esc(c.key) + '"' + (st.hidden.has(c.key) ? "" : " checked") + "> " + esc(c.label) + (c.unit ? " " + esc(c.unit) : "") + "</label>").join("");
+      const allBox = cp.querySelector("input[data-all]");
+      if (allBox) {
+        allBox.indeterminate = onCount > 0 && onCount < listed.length;   // the dash
+        allBox.onchange = () => {                                         // columns-all-row a
+          if (onCount > 0) for (const c of listed) st.hidden.add(c.key);  // checked or dash: every column off
+          else for (const c of listed) st.hidden.delete(c.key);           // empty: every column on
+          persist(); render();
+        };
+      }
+      cp.querySelectorAll("input[data-k]").forEach((inp) => { inp.onchange = () => { if (inp.checked) st.hidden.delete(inp.dataset.k); else st.hidden.add(inp.dataset.k); persist(); render(); }; });
     }
     function CSS_escape(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/([^\w-])/g, "\\$1"); }
 
-    // ----- fit (E8): character estimate per column, recomputed on resize -----
+    // ----- fit (E8, E9): measured widths, recomputed at every render -----
+    let scale = 1, calibrated = false;
     const isLongIdent = (r, idk) => String(r[idk] ?? "").length > IDENTITY_OWN_LINE_MIN_CHARS;
-    function fitColumns(shown, width) {
-      const idk = identityKey(); const map = colByKey();
-      const charW = 9.6, pad = 20;                     // 16 px font on this page
-      const CLIP_CHARS = 22;                           // a clip column shows one line of about this many characters
-      const need = (c, rows) => { let m = c.label.length + (c.unit ? c.unit.length + 1 : 0); for (const r of rows) { const s = String(c.kind === "number" ? fmtCell(c, r[c.key]) : (r[c.key] ?? "")); if (s.length > m) m = s.length; if (m > 40) break; } return Math.min(m, c.text === "clip" ? CLIP_CHARS : 40) * charW + pad; };
-      const identCol = map.get(idk);
-      // E9 per row: a long identity gets its own line; the identity column's
-      // width is sized by the short identities only, and dropped when every
-      // identity is long.
-      const shortRows = shown.filter((r) => !isLongIdent(r, idk));
-      const identAll = !!identCol && shown.length > 0 && shortRows.length === 0;
-      // Narrow widths: the identity may wrap inside 30% of the width and the
-      // fold button is compact, so a metric or two still sits in the row.
-      const narrow = width < ACTIONS_IN_ROW_MIN_PX;
-      // The identity column: at least its longest word (no mid-word breaks),
-      // at least 30% when narrow, at most 45% of the width or its own need.
-      const longestWordPx = identCol ? Math.max(0, ...shortRows.map((r) => Math.max(0, ...String(r[idk] ?? "").split(/\s+/).map((w) => w.length)))) * charW + pad : 0;
-      const identW = identAll || !identCol ? 0
-        : Math.min(Math.max(longestWordPx, width * (narrow ? 0.30 : 0)), Math.max(longestWordPx, Math.min(need(identCol, shortRows), width * 0.45)));
-      const hasActs = (spec.actions || []).length > 0;
-      const actsInRow = hasActs && !narrow;
-      const foldW = narrow ? FOLD_W_NARROW : FOLD_W;
-      const base = identW + (actsInRow ? ACTS_W : 0);
-      const needs = new Map();
-      const attempt = (reserve) => {
-        let used = base + reserve; const inRow = [], folded = []; let full = false;
-        for (const c of visibleCols()) {
-          if (c.key === idk) continue;
-          const w = need(c, shown); needs.set(c.key, w);
-          // contiguous prefix in display order: the first column that does not
-          // fit folds, and every column after it folds too (display order is
-          // the insight order and is never reshuffled to fit).
-          if (!full && used + w <= width) { inRow.push(c); used += w; } else { full = true; folded.push(c); }
-        }
-        return { identAll, identW, inRow, folded, needs, actsInRow, actsInFold: hasActs && !actsInRow, narrow, foldW };
+    const headText = (c) => c.label + (c.unit ? " " + c.unit : "") + (c.key === st.s_key ? (st.s_dir === "asc" ? " ▴" : " ▾") : "");
+    function measurer() {
+      const p = (s) => el.querySelector(".tv-probe " + s);
+      const num = p("td.tv-num"), fold = p("button.tv-fold"), act = p("td.tv-acts button");
+      return {
+        f: { th: fontOf(p("th")), num: fontOf(num), txt: fontOf(p("td.tv-wrap")), fold: fontOf(fold), act: fontOf(act) },
+        cellPad: sideSpace(num, false),
+        foldSpace: sideSpace(fold, true),
+        actSpace: sideSpace(act, true),
+        w: (font, s) => canvasWidth(font, s) * scale,
       };
-      const first = attempt(hasActs && !actsInRow ? foldW : 0);
-      return first.folded.length ? attempt(foldW) : first;
+    }
+    // E8 rule 2: the larger of the longest header word and the longest value
+    function columnNeed(c, shown, m) {
+      let px = 0;
+      for (const w of headerWords(headText(c))) px = Math.max(px, m.w(m.f.th, w));
+      const cap = c.kind === "number" ? Infinity : c.text === "clip" ? CLIP_CHARS : TEXT_NEED_MAX_CHARS;
+      const font = c.kind === "number" ? m.f.num : m.f.txt;
+      const seen = new Set();
+      for (const r of shown) {
+        let s = plainCell(c, r); if (s.length > cap) s = s.slice(0, cap);
+        if (seen.has(s)) continue; seen.add(s);
+        px = Math.max(px, m.w(font, s));
+      }
+      return Math.ceil(px + m.cellPad);
+    }
+    // E8 rule 6: the widest fold toggle face this table can show
+    function toggleWidth(nCols, withActs, m) {
+      const faces = ["▾", "+" + nCols].concat(withActs ? ["+ actions"] : []);
+      return Math.max(...faces.map((s) => m.w(m.f.fold, s))) + m.foldSpace;
+    }
+    // E8 rule 3
+    function identityWidth(c, besideRows, width, phone, toggleW, m) {
+      let word = 0, whole = 0;
+      for (const w of headerWords(headText(c))) word = Math.max(word, m.w(m.f.th, w));
+      const seen = new Set();
+      for (const r of besideRows) {
+        const s = plainCell(c, r);
+        if (seen.has(s)) continue; seen.add(s);
+        whole = Math.max(whole, m.w(m.f.txt, s));
+        for (const w of spaceWords(s)) word = Math.max(word, m.w(m.f.txt, w));
+      }
+      let px = word + m.cellPad;
+      if (phone) px = Math.max(px, Math.min(width * IDENTITY_MIN_PERCENT_PHONE / 100, whole + m.cellPad));
+      return Math.ceil(Math.max(px, toggleW + m.cellPad, IDENTITY_MIN_PX));
+    }
+    // E8 rule 5: the widest set of buttons any shown row carries
+    function actionsWidth(shown, m) {
+      let best = 0;
+      for (const r of shown) { let w = 0; for (const a of (spec.actions || [])) if (matches(a, r)) w += m.w(m.f.act, a.label) + m.actSpace; if (w > best) best = w; }
+      return best ? Math.ceil(best + m.cellPad) : 0;
+    }
+    function fitColumns(shown, width) {
+      const m = measurer();
+      const idk = identityKey(); const identCol = colByKey().get(idk);
+      const phone = width < PHONE_LAYOUT_BELOW_PX;
+      const visible = visibleCols().filter((c) => c.key !== idk);
+      const needs = new Map(visible.map((c) => [c.key, columnNeed(c, shown, m)]));
+      const actsW = actionsWidth(shown, m);
+      const hasActs = actsW > 0;
+      const besideRows = shown.filter((r) => !isLongIdent(r, idk));
+      const identAll = !!identCol && shown.length > 0 && besideRows.length === 0;
+      const identW = identCol && !identAll ? identityWidth(identCol, besideRows, width, phone, toggleWidth(visible.length, hasActs, m), m) : 0;
+      // E8 rule 4: a contiguous prefix in display order, never reshuffled to fit
+      const attempt = (iw) => {
+        let used = iw, full = false; const inRow = [], folded = [];
+        for (const c of visible) { const w = needs.get(c.key); if (!full && used + w <= width) { inRow.push(c); used += w; } else { full = true; folded.push(c); } }
+        const actsInRow = hasActs && !folded.length && used + actsW <= width;
+        return { inRow, folded, actsInRow, actsInFold: hasActs && !actsInRow };
+      };
+      let fit = attempt(identW), identLines = false;
+      if (phone && identW && fit.folded.length) { fit = attempt(0); identLines = true; }   // E9 case 1
+      return Object.assign(fit, { width, n: visible.length, needs, actsW, identAll, identLines, identW: identLines ? 0 : identW });
+    }
+    // The canvas measures at the CSS font size; a device that draws text larger
+    // (a phone's text-size setting) shows up as drawn number cells wider than
+    // the canvas says at the probe's font, and every width is scaled by that.
+    // Runs once per table, on the first render that draws number cells.
+    function calibrate() {
+      const cells = [...el.querySelectorAll("div.tv-wrap td.tv-num")].filter((td) => { const s = td.textContent.trim(); return s && s !== "—"; });
+      if (!cells.length) return false;
+      const font = fontOf(el.querySelector(".tv-probe td.tv-num"));
+      const range = document.createRange(); const ratios = [];
+      for (const td of cells) {
+        range.selectNodeContents(td);
+        const drawn = range.getBoundingClientRect().width, est = canvasWidth(font, td.textContent);
+        if (drawn > 0 && est > 0) ratios.push(drawn / est);
+      }
+      if (!ratios.length) return false;
+      ratios.sort((a, b) => a - b);
+      scale = ratios[Math.floor(ratios.length / 2)];
+      calibrated = true;
+      return true;
     }
 
     // ----- table (E6, E8, E9, E10, E12) -----
     let lastWidth = 0;
     function renderTable(shown) {
+      const wrap = q("div.tv-wrap");
+      const width = el.clientWidth;
+      if (!width) { wrap.innerHTML = ""; lastWidth = 0; return null; }   // hidden: drawn when shown, by the resize observer
+      lastWidth = width;
       const map = colByKey(); const idk = identityKey(); const identCol = map.get(idk);
-      const width = el.clientWidth || 360; lastWidth = width;
       const fit = fitColumns(shown, width);
       const sortCol = map.get(st.s_key);
-      const hasActs = (spec.actions || []).length > 0;
-      const identInRow = !!identCol && !fit.identAll;
-      const hasFoldCol = fit.folded.length > 0 || fit.actsInFold;
-      const ncols = (identInRow ? 1 : 0) + fit.inRow.length + (hasFoldCol ? 1 : 0) + (fit.actsInRow ? 1 : 0);
-      // Fixed layout with computed shares: the table can never be wider than
-      // its container, so the page never scrolls sideways (d9 a).
+      const identInRow = !!identCol && !fit.identAll && !fit.identLines;
+      const ncols = Math.max(1, (identInRow ? 1 : 0) + fit.inRow.length + (fit.actsInRow ? 1 : 0));
+      // E8 rule 7: fixed layout with shares of the measured widths; the table
+      // fills its container and is never wider, so the page never scrolls
+      // sideways (d9 a).
       const shares = [];
-      if (identInRow) shares.push(Math.max(fit.identW, 80));
-      for (const c of fit.inRow) shares.push(fit.needs.get(c.key) || 60);
-      if (hasFoldCol) shares.push(fit.foldW);
-      if (fit.actsInRow) shares.push(ACTS_W);
-      const sum = shares.reduce((a, b) => a + b, 0) || 1;
-      const colgroup = "<colgroup>" + shares.map((w) => '<col style="width:' + (100 * w / sum).toFixed(2) + '%">').join("") + "</colgroup>";
-      const th = (c, cls) => '<th class="' + cls + (c.key === st.s_key ? " tv-sorted" : "") + '">' + esc(c.label) + (c.unit ? " " + esc(c.unit) : "") + (c.key === st.s_key ? (st.s_dir === "asc" ? " ▴" : " ▾") : "") + "</th>";
-      let h = colgroup + "<thead><tr>" + (identInRow ? th(identCol, "tv-ident") : "") + fit.inRow.map((c) => th(c, c.kind === "number" ? "tv-num" : "tv-text")).join("") +
-        (hasFoldCol ? "<th></th>" : "") + (fit.actsInRow ? "<th></th>" : "") + "</tr></thead><tbody>";
+      if (identInRow) shares.push(fit.identW);
+      for (const c of fit.inRow) shares.push(fit.needs.get(c.key));
+      if (fit.actsInRow) shares.push(fit.actsW);
+      if (!shares.length) shares.push(1);
+      const sum = shares.reduce((a, b) => a + b, 0);
+      const colgroup = "<colgroup>" + shares.map((w) => '<col style="width:' + (100 * w / sum).toFixed(3) + '%">').join("") + "</colgroup>";
+      const th = (c, cls) => '<th class="' + cls + (c.key === st.s_key ? " tv-sorted" : "") + '">' + esc(headText(c)).replace(/\//g, "/<wbr>") + "</th>";
+      const headCells = (identInRow ? th(identCol, "tv-ident") : "") + fit.inRow.map((c) => th(c, c.kind === "number" ? "tv-num" : "tv-text")).join("") + (fit.actsInRow ? "<th></th>" : "");
+      let h = colgroup + (headCells ? "<thead><tr>" + headCells + "</tr></thead>" : "") + "<tbody>";
       const tdClass = (c) => c.kind === "number" ? "tv-num" : (c.text === "clip" ? "tv-clip" : c.text === "shrink" ? "tv-shrink" : "tv-wrap");
+      const hasCellsRow = identInRow || fit.inRow.length > 0 || fit.actsInRow;
       const rowHtml = (r, i) => {
-        let s = "";
         const identHtml = identCol ? cellHtml(identCol, r) : "";
-        const longIdent = !!identCol && isLongIdent(r, idk);
-        const foldLabel = st.expanded.has(i) ? (fit.narrow ? "▾" : "▾ less") : (fit.folded.length ? (fit.narrow ? "+" + fit.folded.length : "▸ " + fit.folded.length + " more") : (fit.narrow ? "▸" : "▸ actions"));
-        const foldBtn = hasFoldCol ? '<button type="button" class="tv-fold" data-i="' + i + '">' + foldLabel + "</button>" : "";
-        if (longIdent) s += '<tr class="tv-identline"><td colspan="' + ncols + '">' + identHtml + foldBtn + "</td></tr>";
-        s += "<tr>" + (identInRow ? '<td class="tv-ident ' + tdClass(identCol) + '" data-i="' + i + '" data-k="' + esc(identCol.key) + '">' + (longIdent ? "" : identHtml) + "</td>" : "");
-        for (const c of fit.inRow) s += '<td class="' + tdClass(c) + (st.openCells.has(i + ":" + c.key) ? " open" : "") + '" data-i="' + i + '" data-k="' + esc(c.key) + '">' + cellHtml(c, r) + "</td>";
-        if (hasFoldCol) s += '<td class="tv-num">' + (longIdent ? "" : foldBtn) + "</td>";
-        if (fit.actsInRow) s += '<td class="tv-acts" data-i="' + i + '"></td>';
-        s += "</tr>";
-        if (hasFoldCol && st.expanded.has(i)) s += '<tr class="tv-foldline"><td colspan="' + ncols + '">' + fit.folded.map((c) => '<span class="tv-field"><b>' + esc(c.label) + (c.unit ? " " + esc(c.unit) : "") + "</b>" + cellHtml(c, r) + "</span>").join("") + (fit.actsInFold ? '<div class="tv-acts tv-acts-line" data-i="' + i + '"></div>' : "") + "</td></tr>";
+        const ownLine = !!identCol && (fit.identLines || fit.identAll || isLongIdent(r, idk));   // E9
+        const actsHere = fit.actsInFold && (spec.actions || []).some((a) => matches(a, r));
+        const hasFold = fit.folded.length > 0 || actsHere;
+        const open = hasFold && st.expanded.has(i);
+        const face = open ? "▾" : fit.folded.length ? "+" + fit.folded.length : "+ actions";        // E8 rule 6
+        const toggle = hasFold ? '<button type="button" class="tv-fold" data-i="' + i + '" aria-expanded="' + open + '">' + face + "</button>" : "";
+        let s = "";
+        if (ownLine) s += '<tr class="tv-identline"><td colspan="' + ncols + '">' + identHtml + toggle + "</td></tr>";
+        if (hasCellsRow) {
+          s += "<tr>";
+          if (identInRow) s += '<td class="tv-ident ' + tdClass(identCol) + '" data-i="' + i + '" data-k="' + esc(identCol.key) + '">' + (ownLine ? "" : identHtml + toggle) + "</td>";
+          for (const c of fit.inRow) s += '<td class="' + tdClass(c) + (st.openCells.has(i + ":" + c.key) ? " open" : "") + '" data-i="' + i + '" data-k="' + esc(c.key) + '">' + cellHtml(c, r) + "</td>";
+          if (fit.actsInRow) s += '<td class="tv-acts" data-i="' + i + '"></td>';
+          s += "</tr>";
+        }
+        if (open) s += '<tr class="tv-foldline"><td colspan="' + ncols + '">' + fit.folded.map((c) => '<span class="tv-field"><b>' + esc(c.label) + (c.unit ? " " + esc(c.unit) : "") + "</b>" + cellHtml(c, r) + "</span>").join("") + (actsHere ? '<div class="tv-acts tv-acts-line" data-i="' + i + '"></div>' : "") + "</td></tr>";
         return s;
       };
-      if (!shown.length) h += '<tr><td colspan="' + Math.max(ncols, 1) + '" class="tv-empty">Nothing here.</td></tr>';
+      if (!shown.length) h += '<tr><td colspan="' + ncols + '" class="tv-empty">Nothing here.</td></tr>';
       else if (st.g_key !== "none" && map.has(st.g_key)) {
         const gcol = map.get(st.g_key);
         const groups = new Map();
@@ -460,20 +587,29 @@
         }
       } else shown.forEach((r, i) => { h += rowHtml(r, i); });
       h += "</tbody>";
-      q(".tv-wrap").innerHTML = '<table class="tv-table">' + h + "</table>";
-      const t = q(".tv-table");
-      t.querySelectorAll("button.tv-fold").forEach((b) => { b.onclick = () => { const i = Number(b.dataset.i); if (st.expanded.has(i)) st.expanded.delete(i); else st.expanded.add(i); renderTable(shown); }; });
+      wrap.innerHTML = '<table class="tv-table">' + h + "</table>";
+      const t = wrap.querySelector("table.tv-table");
+      t.querySelectorAll("button.tv-fold").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); const i = Number(b.dataset.i); if (st.expanded.has(i)) st.expanded.delete(i); else st.expanded.add(i); renderTable(shown); }; });
       t.querySelectorAll("tr.tv-group button").forEach((b) => { b.onclick = () => { const g = b.dataset.g; if (st.foldExceptions.has(g)) st.foldExceptions.delete(g); else st.foldExceptions.add(g); renderTable(shown); }; });
       t.querySelectorAll("td.tv-clip").forEach((td) => { td.onclick = () => { const k = td.dataset.i + ":" + td.dataset.k; if (st.openCells.has(k)) st.openCells.delete(k); else st.openCells.add(k); td.classList.toggle("open"); }; });
-      if (hasActs) t.querySelectorAll(".tv-acts").forEach((td) => { const r = shown[Number(td.dataset.i)]; for (const a of spec.actions) if (matches(a, r)) td.appendChild(actionButton(a, r, spec)); });
+      t.querySelectorAll(".tv-acts").forEach((node) => { const r = shown[Number(node.dataset.i)]; for (const a of (spec.actions || [])) if (matches(a, r)) node.appendChild(actionButton(a, r, spec)); });
+      return fit;
     }
 
-    function renderCount(shown) {
+    function renderCount(shown, fit) {
       const map = colByKey();
       const parts = ["<b>" + shown.length.toLocaleString() + "</b> shown of " + data.length.toLocaleString() + " rows"];
       for (const c of enumCols()) if (st.f[c.key] && st.f[c.key] !== "all") parts.push(esc(c.label) + " " + esc(st.f[c.key] === "" ? "(blank)" : st.f[c.key]));
       for (const c of numCols()) { const b = st.n[c.key]; if (!b) continue; if ((b.min ?? "") !== "") parts.push(esc(c.label) + " ≥ " + esc(b.min)); if ((b.max ?? "") !== "") parts.push(esc(c.label) + " ≤ " + esc(b.max)); }
       if (st.g_key !== "none" && map.has(st.g_key)) parts.push("by " + esc(map.get(st.g_key).label));
+      // E11: the fit of the last render and its trigger, the table's width
+      if (fit) {
+        let f = fit.inRow.length + " of " + fit.n + " columns in the row at " + Math.round(fit.width) + " px";
+        if (fit.folded.length) f += ", " + fit.folded.length + " in the fold";
+        if (fit.actsInFold) f += ", actions in the fold";
+        parts.push(f);
+        if (fit.identLines) { const ic = map.get(identityKey()); parts.push(esc(ic ? ic.label : "identity") + " on its own line"); }
+      }
       q(".tv-count").innerHTML = parts.join(" · ");
     }
 
@@ -482,14 +618,15 @@
       if (!map.has(st.s_key)) { const d = defaultSort(); st.s_key = d.key; st.s_dir = d.dir; }
       renderControls();
       const shown = data.filter((r) => passesFilters(r, null)).sort(compareBy(map.get(st.s_key), st.s_dir));
-      renderCount(shown);
-      renderTable(shown);
+      let fit = renderTable(shown);
+      if (fit && !calibrated && calibrate()) fit = renderTable(shown);
+      renderCount(shown, fit);
     }
 
     // Width changes re-render: a window resize, and the container itself
     // changing size, which is how a section hidden at mount (width 0) gets its
     // real width when its section is shown.
-    const onResize = () => { const w = el.clientWidth || 0; if (w > 0 && Math.abs(w - lastWidth) > 24) render(); };
+    const onResize = () => { const w = el.clientWidth || 0; if (w > 0 && Math.abs(w - lastWidth) > REDRAW_MIN_WIDTH_CHANGE_PX) render(); };
     window.addEventListener("resize", onResize);
     let ro = null;
     if (window.ResizeObserver) { ro = new ResizeObserver(onResize); ro.observe(el); }
