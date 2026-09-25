@@ -1,7 +1,7 @@
 /* table-viewer v1 — one table, any shape.
    Spec of record: C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md
-   (draft 2: Mike's rulings d1 to d39 of 2026-09-22 and the rulings of
-   2026-09-23 cited by slug). Section letters below cite it.
+   (draft 5: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
+   cited by slug). Section letters below cite it.
 
    mountTable(container, rows, spec) -> { update(rows), state, destroy() }
      container: element. rows: array of row objects. spec (optional, section B):
@@ -10,6 +10,9 @@
        payload, guard, done, input}], request(action, row, body), afterAction(...).
    TableViewer.actionButton(action, row, spec) -> button element, the same guard
    mechanics for a page's own rows (the ops page's Limits campaign rows).
+   TableViewer.mountTextSize(container) -> the A− A+ text-size pair (E14), once
+   per page; container is an empty element in the page's pinned row 0, which
+   becomes the pair. The pair sizes the whole page.
 
    Build decisions beyond the spec are listed in
    projects\table-viewer\build-decisions-2026-09-22.md. No dependency; no build step. */
@@ -24,11 +27,14 @@
   const ARM_SECONDS = 5;                   // E12: an armed button disarms after this
   const TEXT_FLOOR_PX = 16;                // G: Text is black and big enough
   const PHONE_LAYOUT_BELOW_PX = 600;       // E8 rule 3, E9 case 1: Android's compact window width class ends at 600 dp
-  const IDENTITY_MIN_PERCENT_PHONE = 30;   // E8 rule 3; rule: none on record
-  const IDENTITY_MIN_PX = 80;              // E8 rule 3; rule: none on record
-  const TEXT_NEED_MAX_CHARS = 40;          // E8 rule 2; rule: none on record
-  const CLIP_CHARS = 22;                   // E8 rule 2; rule: none on record
-  const REDRAW_MIN_WIDTH_CHANGE_PX = 24;   // E8; rule: none on record
+  const IDENTITY_MIN_PERCENT_PHONE = 30;   // E8 rule 3; rule: section P
+  const IDENTITY_MIN_PX = 80;              // E8 rule 3; rule: section P
+  const TEXT_NEED_MAX_CHARS = 40;          // E8 rule 2; rule: section P
+  const CLIP_CHARS = 22;                   // E8 rule 2; rule: section P
+  const REDRAW_MIN_WIDTH_CHANGE_PX = 24;   // E8; rule: section P
+  const TEXT_SCALE_STEP_FACTOR = 1.2;      // E14: the nugget viewer's zoom step
+  const TEXT_SCALE_MIN_FACTOR = 0.58;      // E14: the nugget viewer's zoom floor
+  const TEXT_SCALE_MAX_FACTOR = 2.5;       // E14: the nugget viewer's zoom ceiling
 
   // ---------- styles, injected once ----------
   const CSS = `
@@ -91,6 +97,8 @@
 .tv-mark-bad { color: var(--tv-bad); }
 .tv-mark-good { color: var(--tv-good); }
 .tv-probe { position: absolute; left: 0; top: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.tv-textsize { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; flex: none; }
+.tv-textsize button { min-width: 44px; }
 `;
   let cssDone = false;
   function ensureCss() {
@@ -293,6 +301,52 @@
       fire();
     };
     return b;
+  }
+
+  // ---------- text-size pair (E14, section H) ----------
+  // One size per page, saved per device under its own key, apart from the
+  // tables' keys and outside STATE_VERSION; applied as the zoom of the page's
+  // body, as the nugget viewer applies it, when this file loads, so the first
+  // fit of every table is taken at the saved size.
+  const renderers = new Set();                                    // every mounted table's render
+  const textScaleKey = () => "tv:" + (typeof location !== "undefined" ? location.pathname : "page") + ":text_scale";
+  let textScale = 1;
+  function loadTextScale() {
+    try {
+      const v = Number(localStorage.getItem(textScaleKey()));
+      return Number.isFinite(v) && v >= TEXT_SCALE_MIN_FACTOR && v <= TEXT_SCALE_MAX_FACTOR ? v : 1;   // absent or unreadable reads as 1
+    } catch (e) { return 1; }
+  }
+  function applyTextScale() { if (document.body) document.body.style.zoom = String(textScale); }
+  if (typeof document !== "undefined") {
+    textScale = loadTextScale();
+    if (document.body) applyTextScale(); else document.addEventListener("DOMContentLoaded", applyTextScale);
+  }
+  function mountTextSize(container) {
+    ensureCss();
+    // The container, an empty element in the page's row 0, becomes the pair,
+    // so it is the row's own flex item and sits at the row's right end.
+    const box = typeof container === "string" ? document.querySelector(container) : container;
+    if (!box) throw new Error("table-viewer: text-size container not found");
+    box.classList.add("tv", "tv-textsize");
+    box.innerHTML = '<button type="button" title="smaller text">A−</button><button type="button" title="larger text">A+</button>';
+    const [minus, plus] = box.querySelectorAll("button");
+    const paint = () => {                                         // at a limit the button is inapplicable (section G)
+      const atMin = textScale <= TEXT_SCALE_MIN_FACTOR, atMax = textScale >= TEXT_SCALE_MAX_FACTOR;
+      minus.disabled = atMin; minus.classList.toggle("na", atMin);
+      plus.disabled = atMax; plus.classList.toggle("na", atMax);
+    };
+    const step = (dir) => {
+      const z = textScale * (dir > 0 ? TEXT_SCALE_STEP_FACTOR : 1 / TEXT_SCALE_STEP_FACTOR);
+      textScale = Math.round(Math.min(TEXT_SCALE_MAX_FACTOR, Math.max(TEXT_SCALE_MIN_FACTOR, z)) * 100) / 100;   // as the viewer rounds
+      try { localStorage.setItem(textScaleKey(), String(textScale)); } catch (e) {}
+      applyTextScale(); paint();
+      for (const r of renderers) r();                             // every mounted table's fit recomputed (E8)
+    };
+    minus.onclick = () => step(-1);
+    plus.onclick = () => step(1);
+    paint();
+    return box;
   }
 
   // ---------- mount ----------
@@ -509,14 +563,19 @@
     // (a phone's text-size setting) shows up as drawn number cells wider than
     // the canvas says at the probe's font, and every width is scaled by that.
     // Runs once per table, on the first render that draws number cells.
+    // Drawn widths come back zoomed by the page's text size (E14) while the
+    // container's clientWidth does not, so the drawn width is divided by the
+    // table's effective zoom; the page's size then acts once, through the
+    // narrower clientWidth (measured in Chrome 152, 2026-09-25).
     function calibrate() {
       const cells = [...el.querySelectorAll("div.tv-wrap td.tv-num")].filter((td) => { const s = td.textContent.trim(); return s && s !== "—"; });
       if (!cells.length) return false;
       const font = fontOf(el.querySelector(".tv-probe td.tv-num"));
+      const zoom = el.currentCSSZoom || 1;
       const range = document.createRange(); const ratios = [];
       for (const td of cells) {
         range.selectNodeContents(td);
-        const drawn = range.getBoundingClientRect().width, est = canvasWidth(font, td.textContent);
+        const drawn = range.getBoundingClientRect().width / zoom, est = canvasWidth(font, td.textContent);
         if (drawn > 0 && est > 0) ratios.push(drawn / est);
       }
       if (!ratios.length) return false;
@@ -630,15 +689,16 @@
     window.addEventListener("resize", onResize);
     let ro = null;
     if (window.ResizeObserver) { ro = new ResizeObserver(onResize); ro.observe(el); }
+    renderers.add(render);
     render();
 
     return {
       state: st,
       update(newRows) { data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(); render(); },
-      destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); el.innerHTML = ""; el.classList.remove("tv"); },
+      destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); renderers.delete(render); el.innerHTML = ""; el.classList.remove("tv"); },
     };
   }
 
-  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, inferColumns, inferKind };
+  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, inferColumns, inferKind };
   window.mountTable = mountTable;
 })();

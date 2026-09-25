@@ -17,19 +17,22 @@
   /* Page width (spec G, ruling page-max-width b): tables use the window's
      full width; prose stays at most 900 px wide. */
   .sub { color: var(--dim); font-size: 15px; margin-bottom: 14px; max-width: 900px; }
-  .secbar { position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 5; display: flex; gap: 8px; align-items: center; }
-  .secbar select { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-height: 40px; }
+  /* The bar wraps, so at a large text size (spec E14) the text-size pair
+     takes a second line instead of pushing the page sideways (spec G). */
+  .secbar { position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .secbar select { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-height: 40px; max-width: 100%; }
   section { display: none; } section.on { display: block; }
 </style>
 </head>
 <body>
 <h1>table-viewer demo</h1>
 <div class="sub">Two sample tables with no key and no server: a metric table with actions that only log, and a long-text registry. Spec: working_docs projects\table-viewer\table-viewer-spec.md.</div>
-<div class="secbar"><label for="secSel">Section</label><select id="secSel"><option value="channels">Channels (metric)</option><option value="rules">Rules (long-text)</option></select></div>
+<div class="secbar"><label for="secSel">Section</label><select id="secSel"><option value="channels">Channels (metric)</option><option value="rules">Rules (long-text)</option></select><span id="textSize"></span></div>
 <section data-sec="channels" class="on"><h2>Channels</h2><div id="channels"></div></section>
 <section data-sec="rules"><h2>Rules</h2><div id="rules"></div></section>
 <script src="table-viewer-v1.js"></script>
 <script>
+TableViewer.mountTextSize("#textSize");   // E14: the text-size pair at the right end of the pinned bar
 const sel = document.getElementById("secSel");
 function showSection(k) { document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.dataset.sec === k)); sel.value = k; try { localStorage.setItem("tv:demo:section", k); } catch (e) {} }
 sel.onchange = () => showSection(sel.value);
