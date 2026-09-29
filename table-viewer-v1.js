@@ -1,6 +1,6 @@
 /* table-viewer v1 — one table, any shape.
    Spec of record: C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md
-   (draft 6: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
+   (draft 7: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
    cited by slug). Section letters below cite it.
 
    mountTable(container, rows, spec) -> { update(rows), state, destroy() }
@@ -44,10 +44,9 @@
       --tv-accent: var(--accent, #5aa8f0); --tv-gold: var(--gold, #e0b34e); --tv-bad: var(--bad, #e25555);
       --tv-good: var(--good, #6fc48d); --tv-dim: var(--dim, #bfe3ff); }
 .tv * { box-sizing: border-box; }
-.tv-row { display: flex; gap: 8px; align-items: flex-end; overflow-x: auto; scrollbar-width: none; padding: 4px 0; }
-.tv-row::-webkit-scrollbar { display: none; }
+.tv-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 4px 0; }   /* wraps, never scrolls sideways (spec F, G) */
 .tv-ctl { display: flex; flex-direction: column; gap: 2px; flex: none; }
-.tv-ctl label { font-size: 13px; color: var(--tv-dim); white-space: nowrap; }
+.tv-ctl label { font-size: 16px; color: var(--tv-dim); white-space: nowrap; }
 .tv-ctl select { max-width: min(60vw, 18em); }
 .tv select, .tv button, .tv input { font: inherit; color: var(--ink, #e8e8e6); background: var(--tv-card);
       border: 1px solid var(--tv-line); border-radius: 8px; padding: 6px 8px; min-height: 40px; }
@@ -55,7 +54,7 @@
 .tv .user-set { border-color: var(--tv-mint); color: var(--tv-mint); }
 .tv .side-effect { border-color: var(--tv-yellow); color: var(--tv-yellow); }
 .tv .na { border-color: var(--tv-sand); color: var(--tv-sand); text-decoration: line-through; }
-.tv-count { margin: 6px 0; font-size: 15px; }
+.tv-count { margin: 6px 0; font-size: 16px; }
 .tv-count b { color: var(--tv-accent); }
 .tv-panel { display: none; border: 1px solid var(--tv-line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; background: var(--tv-card); }
 .tv-panel.open { display: block; }
@@ -84,9 +83,9 @@
 .tv-table tr.tv-foldline td { text-align: left; white-space: normal; background: var(--tv-card2); border-bottom: 1px solid var(--tv-line); }
 .tv-table tr.tv-foldline .tv-field { display: block; padding: 2px 0; overflow-wrap: break-word; }
 .tv-table tr.tv-foldline .tv-field b { color: var(--tv-dim); font-weight: 600; margin-right: 6px; }
-.tv-fold { min-height: 32px; padding: 2px 8px; font-size: 14px; margin-left: 6px; }
+.tv-fold { min-height: 32px; padding: 2px 8px; font-size: 16px; margin-left: 6px; }
 .tv-acts { white-space: normal; }
-.tv-acts button { min-height: 34px; padding: 4px 8px; font-size: 14px; margin: 2px 4px 2px 0; }
+.tv-acts button { min-height: 34px; padding: 4px 8px; font-size: 16px; margin: 2px 4px 2px 0; }
 .tv-acts-line { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 4px; }
 .tv-acts button.armed { border-color: var(--tv-bad); color: var(--tv-bad); }
 .tv-acts button.done { border-color: var(--tv-good); color: var(--tv-good); }
