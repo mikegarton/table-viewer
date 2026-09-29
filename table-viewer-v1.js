@@ -1,6 +1,6 @@
 /* table-viewer v1 — one table, any shape.
    Spec of record: C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md
-   (draft 5: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
+   (draft 6: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
    cited by slug). Section letters below cite it.
 
    mountTable(container, rows, spec) -> { update(rows), state, destroy() }
@@ -23,7 +23,7 @@
   // Section P lists every constant with its rule and effect; the ops page's
   // Code constants table lists the same rows.
   const ENUM_MAX_DISTINCT = 12;            // d8 a: the sheet_shape.py rule
-  const IDENTITY_OWN_LINE_MIN_CHARS = 24;  // E9 case 2
+  const IDENTITY_OWN_LINE_ABOVE_PERCENT = 50; // E9 case 2; rule: section P (retires IDENTITY_OWN_LINE_MIN_CHARS)
   const ARM_SECONDS = 5;                   // E12: an armed button disarms after this
   const TEXT_FLOOR_PX = 16;                // G: Text is black and big enough
   const PHONE_LAYOUT_BELOW_PX = 600;       // E8 rule 3, E9 case 1: Android's compact window width class ends at 600 dp
@@ -484,7 +484,8 @@
 
     // ----- fit (E8, E9): measured widths, recomputed at every render -----
     let scale = 1, calibrated = false;
-    const isLongIdent = (r, idk) => String(r[idk] ?? "").length > IDENTITY_OWN_LINE_MIN_CHARS;
+    // E9 case 2: an identity is long when its drawn width passes this share of the table's width
+    const isLongIdent = (r, idkCol, width, m) => !!idkCol && m.w(m.f.txt, plainCell(idkCol, r)) > width * IDENTITY_OWN_LINE_ABOVE_PERCENT / 100;
     const headText = (c) => c.label + (c.unit ? " " + c.unit : "") + (c.key === st.s_key ? (st.s_dir === "asc" ? " ▴" : " ▾") : "");
     function measurer() {
       const p = (s) => el.querySelector(".tv-probe " + s);
@@ -545,7 +546,8 @@
       const needs = new Map(visible.map((c) => [c.key, columnNeed(c, shown, m)]));
       const actsW = actionsWidth(shown, m);
       const hasActs = actsW > 0;
-      const besideRows = shown.filter((r) => !isLongIdent(r, idk));
+      const longRows = new Set(identCol ? shown.filter((r) => isLongIdent(r, identCol, width, m)) : []);
+      const besideRows = shown.filter((r) => !longRows.has(r));
       const identAll = !!identCol && shown.length > 0 && besideRows.length === 0;
       const identW = identCol && !identAll ? identityWidth(identCol, besideRows, width, phone, toggleWidth(visible.length, hasActs, m), m) : 0;
       // E8 rule 4: a contiguous prefix in display order, never reshuffled to fit
@@ -556,8 +558,11 @@
         return { inRow, folded, actsInRow, actsInFold: hasActs && !actsInRow };
       };
       let fit = attempt(identW), identLines = false;
-      if (phone && identW && fit.folded.length) { fit = attempt(0); identLines = true; }   // E9 case 1
-      return Object.assign(fit, { width, n: visible.length, needs, actsW, identAll, identLines, identW: identLines ? 0 : identW });
+      if (phone && identW && fit.folded.length) {                    // E9 case 1: only when the move puts at least one more column in the row
+        const moved = attempt(0);
+        if (moved.inRow.length > fit.inRow.length) { fit = moved; identLines = true; }
+      }
+      return Object.assign(fit, { width, n: visible.length, needs, actsW, identAll, identLines, longRows, identW: identLines ? 0 : identW });
     }
     // The canvas measures at the CSS font size; a device that draws text larger
     // (a phone's text-size setting) shows up as drawn number cells wider than
@@ -614,7 +619,7 @@
       const hasCellsRow = identInRow || fit.inRow.length > 0 || fit.actsInRow;
       const rowHtml = (r, i) => {
         const identHtml = identCol ? cellHtml(identCol, r) : "";
-        const ownLine = !!identCol && (fit.identLines || fit.identAll || isLongIdent(r, idk));   // E9
+        const ownLine = !!identCol && (fit.identLines || fit.identAll || fit.longRows.has(r));   // E9
         const actsHere = fit.actsInFold && (spec.actions || []).some((a) => matches(a, r));
         const hasFold = fit.folded.length > 0 || actsHere;
         const open = hasFold && st.expanded.has(i);
@@ -663,7 +668,8 @@
       if (st.g_key !== "none" && map.has(st.g_key)) parts.push("by " + esc(map.get(st.g_key).label));
       // E11: the fit of the last render and its trigger, the table's width
       if (fit) {
-        let f = fit.inRow.length + " of " + fit.n + " columns in the row at " + Math.round(fit.width) + " px";
+        // E11: with every column cleared the fit reads as a plain statement, not "0 of 0"
+        let f = fit.n === 0 ? "no columns chosen; identity only" : fit.inRow.length + " of " + fit.n + " columns in the row at " + Math.round(fit.width) + " px";
         if (fit.folded.length) f += ", " + fit.folded.length + " in the fold";
         if (fit.actsInFold) f += ", actions in the fold";
         parts.push(f);
