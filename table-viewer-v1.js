@@ -31,6 +31,7 @@
   const IDENTITY_MIN_PX = 80;              // E8 rule 3; rule: section P
   const TEXT_NEED_MAX_CHARS = 40;          // E8 rule 2; rule: section P
   const CLIP_CHARS = 22;                   // E8 rule 2; rule: section P
+  const COLUMN_MAX_PERCENT = 35;           // E8 rule 2, the ceiling (long-column b); rule: section P
   const REDRAW_MIN_WIDTH_CHANGE_PX = 24;   // E8; rule: section P
   const TEXT_SCALE_STEP_FACTOR = 1.2;      // E14: the nugget viewer's zoom step
   const TEXT_SCALE_MIN_FACTOR = 0.58;      // E14: the nugget viewer's zoom floor
@@ -67,7 +68,7 @@
 .tv-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .tv-table th, .tv-table td { overflow-wrap: break-word; }
 .tv-table th, .tv-table td { padding: 7px 8px; border-bottom: 1px solid var(--tv-line); text-align: right; vertical-align: top; }
-.tv-table th { position: sticky; top: 0; background: var(--tv-card); color: var(--tv-dim); font-weight: 600; white-space: normal; }
+.tv-table th { position: sticky; top: var(--tv-sticky-top, 0px); z-index: 1; background: var(--tv-card); color: var(--tv-dim); font-weight: 600; white-space: normal; overflow-wrap: anywhere; }   /* parks under the host's pinned bar (header-offset a) */
 .tv-table th.tv-sorted { color: var(--tv-accent); }
 .tv-table td.tv-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tv-table th.tv-ident, .tv-table td.tv-ident { text-align: left; }
@@ -75,6 +76,8 @@
 .tv-table td.tv-wrap { white-space: normal; overflow-wrap: break-word; }
 .tv-table td.tv-clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 14em; cursor: pointer; }
 .tv-table td.tv-clip.open { white-space: normal; overflow: visible; max-width: none; }
+.tv-table td.tv-over { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }          /* a value over the ceiling (E8 rule 2, E10) */
+.tv-table td.tv-over.open { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .tv-table td.tv-shrink { white-space: normal; overflow-wrap: anywhere; font-size: ${TEXT_FLOOR_PX}px; }
 .tv-table tr.tv-identline td { text-align: left; border-bottom: none; padding-bottom: 0; font-weight: 600; white-space: normal; overflow-wrap: break-word; }
 .tv-table tr.tv-identline + tr td { padding-top: 2px; }
@@ -511,6 +514,10 @@
       }
       return Math.ceil(px + m.cellPad);
     }
+    // E8 rule 2, the ceiling (long-column b): no column claims more than
+    // COLUMN_MAX_PERCENT of the table's width; a value wider than its cell then
+    // shows as one line ending in an ellipsis that a tap opens (E10).
+    const ceilingPx = (width) => Math.floor(width * COLUMN_MAX_PERCENT / 100);
     // E8 rule 6: the widest fold toggle face this table can show
     function toggleWidth(nCols, withActs, m) {
       const faces = ["▾", "+" + nCols].concat(withActs ? ["+ actions"] : []);
@@ -542,13 +549,14 @@
       const idk = identityKey(); const identCol = colByKey().get(idk);
       const phone = width < PHONE_LAYOUT_BELOW_PX;
       const visible = visibleCols().filter((c) => c.key !== idk);
-      const needs = new Map(visible.map((c) => [c.key, columnNeed(c, shown, m)]));
+      const ceiling = ceilingPx(width);
+      const needs = new Map(visible.map((c) => [c.key, Math.min(columnNeed(c, shown, m), ceiling)]));
       const actsW = actionsWidth(shown, m);
       const hasActs = actsW > 0;
       const longRows = new Set(identCol ? shown.filter((r) => isLongIdent(r, identCol, width, m)) : []);
       const besideRows = shown.filter((r) => !longRows.has(r));
       const identAll = !!identCol && shown.length > 0 && besideRows.length === 0;
-      const identW = identCol && !identAll ? identityWidth(identCol, besideRows, width, phone, toggleWidth(visible.length, hasActs, m), m) : 0;
+      const identW = identCol && !identAll ? Math.max(IDENTITY_MIN_PX, Math.min(identityWidth(identCol, besideRows, width, phone, toggleWidth(visible.length, hasActs, m), m), ceiling)) : 0;
       // E8 rule 4: a contiguous prefix in display order, never reshuffled to fit
       const attempt = (iw) => {
         let used = iw, full = false; const inRow = [], folded = [];
@@ -561,7 +569,7 @@
         const moved = attempt(0);
         if (moved.inRow.length > fit.inRow.length) { fit = moved; identLines = true; }
       }
-      return Object.assign(fit, { width, n: visible.length, needs, actsW, identAll, identLines, longRows, identW: identLines ? 0 : identW });
+      return Object.assign(fit, { width, n: visible.length, needs, actsW, identAll, identLines, longRows, identW: identLines ? 0 : identW, m });
     }
     // The canvas measures at the CSS font size; a device that draws text larger
     // (a phone's text-size setting) shows up as drawn number cells wider than
@@ -609,12 +617,33 @@
       for (const c of fit.inRow) shares.push(fit.needs.get(c.key));
       if (fit.actsInRow) shares.push(fit.actsW);
       if (!shares.length) shares.push(1);
+      // The ceiling holds after the sharing too (long-column b): a cell that rule 7
+      // would widen past COLUMN_MAX_PERCENT stays at the ceiling and the width it
+      // declines goes to the other cells, in proportion, until none passes it.
+      if (shares.length > 1) {
+        const cap = ceilingPx(width);
+        for (let pass = 0; pass < shares.length; pass++) {
+          const total = shares.reduce((a, b) => a + b, 0);
+          const px = shares.map((w) => width * w / total);
+          const i = px.findIndex((v) => v > cap + 0.5);
+          if (i < 0) break;
+          const rest = total - shares[i];                                    // the other cells' claims
+          const want = cap * rest / (width - cap);                           // the claim that lands this cell on the ceiling
+          shares[i] = want;
+        }
+      }
       const sum = shares.reduce((a, b) => a + b, 0);
       const colgroup = "<colgroup>" + shares.map((w) => '<col style="width:' + (100 * w / sum).toFixed(3) + '%">').join("") + "</colgroup>";
       const th = (c, cls) => '<th class="' + cls + (c.key === st.s_key ? " tv-sorted" : "") + '">' + esc(headText(c)).replace(/\//g, "/<wbr>") + "</th>";
       const headCells = (identInRow ? th(identCol, "tv-ident") : "") + fit.inRow.map((c) => th(c, c.kind === "number" ? "tv-num" : "tv-text")).join("") + (fit.actsInRow ? "<th></th>" : "");
       let h = colgroup + (headCells ? "<thead><tr>" + headCells + "</tr></thead>" : "") + "<tbody>";
       const tdClass = (c) => c.kind === "number" ? "tv-num" : (c.text === "clip" ? "tv-clip" : c.text === "shrink" ? "tv-shrink" : "tv-wrap");
+      // E10, the ceiling: a value drawn wider than the ceiling gets the clipped
+      // treatment whatever the column's policy, measured as the fit measures;
+      // a value under the ceiling wraps inside its cell as before.
+      const cellPx = new Map(); { let k = 0; if (identInRow) cellPx.set(identCol.key, width * shares[k++] / sum); for (const c of fit.inRow) cellPx.set(c.key, width * shares[k++] / sum); }
+      const over = (c, r) => { if (c.text === "clip" || c.text === "shrink" || !cellPx.has(c.key)) return false; return fit.m.w(c.kind === "number" ? fit.m.f.num : fit.m.f.txt, plainCell(c, r)) + fit.m.cellPad > ceilingPx(width); };
+      const overClass = (c, r, i) => over(c, r) ? " tv-over" + (st.openCells.has(i + ":" + c.key) ? " open" : "") : "";
       const hasCellsRow = identInRow || fit.inRow.length > 0 || fit.actsInRow;
       const rowHtml = (r, i) => {
         const identHtml = identCol ? cellHtml(identCol, r) : "";
@@ -628,8 +657,8 @@
         if (ownLine) s += '<tr class="tv-identline"><td colspan="' + ncols + '">' + identHtml + toggle + "</td></tr>";
         if (hasCellsRow) {
           s += "<tr>";
-          if (identInRow) s += '<td class="tv-ident ' + tdClass(identCol) + '" data-i="' + i + '" data-k="' + esc(identCol.key) + '">' + (ownLine ? "" : identHtml + toggle) + "</td>";
-          for (const c of fit.inRow) s += '<td class="' + tdClass(c) + (st.openCells.has(i + ":" + c.key) ? " open" : "") + '" data-i="' + i + '" data-k="' + esc(c.key) + '">' + cellHtml(c, r) + "</td>";
+          if (identInRow) s += '<td class="tv-ident ' + tdClass(identCol) + (ownLine ? "" : overClass(identCol, r, i)) + '" data-i="' + i + '" data-k="' + esc(identCol.key) + '">' + (ownLine ? "" : identHtml + toggle) + "</td>";
+          for (const c of fit.inRow) s += '<td class="' + tdClass(c) + (st.openCells.has(i + ":" + c.key) && c.text === "clip" ? " open" : "") + overClass(c, r, i) + '" data-i="' + i + '" data-k="' + esc(c.key) + '">' + cellHtml(c, r) + "</td>";
           if (fit.actsInRow) s += '<td class="tv-acts" data-i="' + i + '"></td>';
           s += "</tr>";
         }
@@ -654,7 +683,7 @@
       const t = wrap.querySelector("table.tv-table");
       t.querySelectorAll("button.tv-fold").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); const i = Number(b.dataset.i); if (st.expanded.has(i)) st.expanded.delete(i); else st.expanded.add(i); renderTable(shown); }; });
       t.querySelectorAll("tr.tv-group button").forEach((b) => { b.onclick = () => { const g = b.dataset.g; if (st.foldExceptions.has(g)) st.foldExceptions.delete(g); else st.foldExceptions.add(g); renderTable(shown); }; });
-      t.querySelectorAll("td.tv-clip").forEach((td) => { td.onclick = () => { const k = td.dataset.i + ":" + td.dataset.k; if (st.openCells.has(k)) st.openCells.delete(k); else st.openCells.add(k); td.classList.toggle("open"); }; });
+      t.querySelectorAll("td.tv-clip, td.tv-over").forEach((td) => { td.onclick = (e) => { if (e.target.closest("button")) return; const k = td.dataset.i + ":" + td.dataset.k; if (st.openCells.has(k)) st.openCells.delete(k); else st.openCells.add(k); td.classList.toggle("open"); }; });
       t.querySelectorAll(".tv-acts").forEach((node) => { const r = shown[Number(node.dataset.i)]; for (const a of (spec.actions || [])) if (matches(a, r)) node.appendChild(actionButton(a, r, spec)); });
       return fit;
     }

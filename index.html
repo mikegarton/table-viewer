@@ -33,6 +33,10 @@
 <script src="table-viewer-v1.js"></script>
 <script>
 TableViewer.mountTextSize("#textSize");   // E14: the text-size pair at the right end of the pinned bar
+// Header offset (header-offset a): the pinned bar's height, so the tables' headers park under it (spec G).
+const secbar = document.querySelector(".secbar");
+const setStickyTop = () => document.documentElement.style.setProperty("--tv-sticky-top", secbar.getBoundingClientRect().height + "px");
+setStickyTop(); if (window.ResizeObserver) new ResizeObserver(setStickyTop).observe(secbar);
 const sel = document.getElementById("secSel");
 function showSection(k) { document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.dataset.sec === k)); sel.value = k; try { localStorage.setItem("tv:demo:section", k); } catch (e) {} }
 sel.onchange = () => showSection(sel.value);

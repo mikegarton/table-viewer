@@ -9,7 +9,7 @@ Files:
 - `table-viewer-v1.js` — the module. Exposes `mountTable(container, rows, spec)` and the `TableViewer` namespace (`mountTable`, `actionButton`, `mountTextSize`, `inferColumns`, `inferKind`, `version`). `mountTextSize(container)` turns an empty element in a page's pinned top row into the A− A+ text-size pair, which sizes the whole page and is remembered per device (spec E14).
 - `index.html` and `sample.json` — a demo page with two sample tables, the text-size pair and no server: a metric table whose actions only log to the console, and a long-text registry. Serve the folder with any static server and open `index.html`.
 
-Spec of record: `C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md` (draft 6, 2026-09-28: the four post-acceptance findings), with its changelog, the project brief and the build decisions log beside it.
+Spec of record: `C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md` (draft 8, 2026-10-19: the column-width ceiling with clip-and-tap, and the headers under the host's pinned bar through the CSS variable `--tv-sticky-top`, which a host page sets to the height of what it pins at the top), with its changelog, the project brief and the build decisions log beside it.
 
 Repo and site, public since 2026-09-24 (ruling d7 a): `https://github.com/mikegarton/table-viewer`; the demo page and the module are served at `https://mikegarton.github.io/table-viewer/`.
 

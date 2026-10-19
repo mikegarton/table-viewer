@@ -11,7 +11,8 @@
     {"channel_id": "UC007", "label": "Hands On", "source": "youtube", "enabled": true, "nug_per_usd": 133.0, "nug_per_item": 4.9, "nug_per_month": 14.2, "taste_med": 45, "mentor_med": 49, "nuggets": 98, "rated_ge4": 2, "cost_usd": 0.74, "videos_processed": 20},
     {"channel_id": "SS003", "label": "Compost", "source": "substack", "enabled": false, "nug_per_usd": null, "nug_per_item": null, "nug_per_month": null, "taste_med": null, "mentor_med": null, "nuggets": 0, "rated_ge4": 0, "cost_usd": 0.0, "videos_processed": 0},
     {"channel_id": "UC008", "label": "Method", "source": "youtube", "enabled": true, "nug_per_usd": 240.0, "nug_per_item": 8.0, "nug_per_month": 33.3, "taste_med": 60, "mentor_med": 66, "nuggets": 200, "rated_ge4": 18, "cost_usd": 0.83, "videos_processed": 25},
-    {"channel_id": "UC009", "label": "Panel", "source": "youtube", "enabled": true, "nug_per_usd": 61.0, "nug_per_item": 2.4, "nug_per_month": 8.8, "taste_med": 39, "mentor_med": 41, "nuggets": 61, "rated_ge4": 1, "cost_usd": 1.00, "videos_processed": 25}
+    {"channel_id": "UC009", "label": "Panel", "source": "youtube", "enabled": true, "nug_per_usd": 61.0, "nug_per_item": 2.4, "nug_per_month": 8.8, "taste_med": 39, "mentor_med": 41, "nuggets": 61, "rated_ge4": 1, "cost_usd": 1.00, "videos_processed": 25},
+    {"channel_id": "UC099", "label": "UCxjQryrnhgEB-xHIN_0ttag_sitting_2026-10-19T01:04:00.000Z_device_8fc627ab-fe7e-4082-a02f", "source": "youtube", "enabled": true, "nug_per_usd": 12.0, "nug_per_item": 0.4, "nug_per_month": 1.2, "taste_med": 40, "mentor_med": 45, "nuggets": 3, "rated_ge4": 0, "cost_usd": 0.25, "videos_processed": 7}
   ],
   "rules": [
     {"key": "rule_a1", "name": "All first", "statement": "Every filter list carries All, in first position, as its default. Any is not used because it implies an unchosen subset.", "binding": "choice", "active": "unrestricted-all", "date": "2026-08-10"},
