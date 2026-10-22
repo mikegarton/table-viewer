@@ -110,7 +110,7 @@
 .tv-probe { position: absolute; left: 0; top: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .tv-textsize { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; flex: none; }
 .tv-textsize button { min-width: 44px; }
-.tv-views { display: contents; }   /* E15: the three widgets are the page's row 0's own items, so the row wraps them one by one and never scrolls (G) */
+.tv-views { display: contents; }   /* E15: the label and the three widgets are the page's row 0's own items, at its height, wrapping one by one, never scrolling (G) */
 .tv-views select { max-width: min(60vw, 18em); }
 .tv-views button.armed { border-color: var(--tv-bad); color: var(--tv-bad); }
 `;
@@ -412,9 +412,10 @@
     const store = opts.viewsStoreTblVwr || localViewsStore(site);
     const showSection = typeof opts.showSectionTblVwr === "function" ? opts.showSectionTblVwr : null;
     box.classList.add("tv", "tv-views");
-    box.innerHTML = '<div class="tv-ctl"><label for="tvView">View</label><select id="tvView"></select></div>' +
-      '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvViewSave">save view</button></div>' +
-      '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvViewDel">delete view</button></div>';
+    // Four row items, the label beside its dropdown as the page's own Section
+    // label sits, so the widgets stand at the row's height (Mike, 2026-10-22).
+    box.innerHTML = '<label for="tvView">View</label><select id="tvView"></select>' +
+      '<button type="button" id="tvViewSave">save view</button><button type="button" id="tvViewDel">delete view</button>';
     const sel = box.querySelector("#tvView"), saveBtn = box.querySelector("#tvViewSave"), delBtn = box.querySelector("#tvViewDel");
     let current = "", armed = null, views = [];
     const disarm = () => { delBtn.textContent = "delete view"; delBtn.classList.remove("armed"); armed = null; };
