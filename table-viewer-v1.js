@@ -20,8 +20,9 @@
      (the spec's section); choosing one calls showSectionTblVwr(section) and
      restores that table's saved variables at once (the one named exception to
      section D's single-writer rule). Views live per device under
-     tv:<site>:views behind the small store interface (list, get, save, remove,
-     current, setCurrent), which viewsStoreTblVwr replaces (ruling view-storage c).
+     tv:<site>:views behind the small store interface (listViewsTblVwr,
+     getViewTblVwr, saveViewTblVwr, removeViewTblVwr, currentViewTblVwr,
+     setCurrentViewTblVwr), which viewsStoreTblVwr replaces (ruling view-storage c).
 
    Build decisions beyond the spec are listed in
    projects\table-viewer\build-decisions-2026-09-22.md. No dependency; no build step. */
@@ -375,18 +376,19 @@
   // The store interface (ruling view-storage c): per device now, under one key
   // per page holding every view by name; a page may pass another object with
   // the same six methods, so a server store replaces this one without touching
-  // the widgets. Methods may return promises.
+  // the widgets. Methods may return promises. The names carry the scope part
+  // (Mike, 2026-10-22, d13 a).
   function localViewsStore(site) {
     const key = "tv:" + site + ":views", curKey = "tv:" + site + ":view";
     const read = () => { try { const o = JSON.parse(localStorage.getItem(key) || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } };
     const write = (o) => { try { localStorage.setItem(key, JSON.stringify(o)); } catch (e) {} };
     return {
-      list() { return Object.values(read()).filter((v) => v && typeof v.name === "string"); },
-      get(name) { return read()[name] || null; },
-      save(view) { const o = read(); o[view.name] = view; write(o); },
-      remove(name) { const o = read(); delete o[name]; write(o); },
-      current() { try { return localStorage.getItem(curKey) || ""; } catch (e) { return ""; } },
-      setCurrent(name) { try { if (name) localStorage.setItem(curKey, name); else localStorage.removeItem(curKey); } catch (e) {} },
+      listViewsTblVwr() { return Object.values(read()).filter((v) => v && typeof v.name === "string"); },
+      getViewTblVwr(name) { return read()[name] || null; },
+      saveViewTblVwr(view) { const o = read(); o[view.name] = view; write(o); },
+      removeViewTblVwr(name) { const o = read(); delete o[name]; write(o); },
+      currentViewTblVwr() { try { return localStorage.getItem(curKey) || ""; } catch (e) { return ""; } },
+      setCurrentViewTblVwr(name) { try { if (name) localStorage.setItem(curKey, name); else localStorage.removeItem(curKey); } catch (e) {} },
     };
   }
   // The settings a view holds, in one canonical string over the columns a table
@@ -424,7 +426,7 @@
     const onScreen = (m) => m && m.element.clientWidth > 0 && mounts.get(m.tableName) === m;
     const pickMount = () => onScreen(lastTouched) ? lastTouched : ([...mounts.values()].find(onScreen) || null);
     async function paint() {
-      views = (await store.list()).slice().sort((a, b) => String(b.saved_at || "").localeCompare(String(a.saved_at || ""))); // ruling view-order a: newest save first
+      views = (await store.listViewsTblVwr()).slice().sort((a, b) => String(b.saved_at || "").localeCompare(String(a.saved_at || ""))); // ruling view-order a: newest save first
       if (!views.some((v) => v.name === current)) current = "";
       const cur = views.find((v) => v.name === current) || null;
       const live = cur && mounts.has(cur.table) ? mounts.get(cur.table) : null;
@@ -439,8 +441,8 @@
       if (!cur) disarm();
     }
     sel.onchange = async () => {
-      current = sel.value; await store.setCurrent(current); disarm();
-      const v = current ? await store.get(current) : null;
+      current = sel.value; await store.setCurrentViewTblVwr(current); disarm();
+      const v = current ? await store.getViewTblVwr(current) : null;
       if (v && mounts.has(v.table)) {
         if (v.section != null && showSection) showSection(v.section);               // the view's section first
         mounts.get(v.table).applyView(v);                                           // then its settings, as a restore
@@ -454,8 +456,8 @@
       if (answer == null) return;
       const name = String(answer).trim(); if (!name) return;
       const v = Object.assign({ name, saved_at: new Date().toISOString() }, m.snapshotView());
-      await store.save(v);                                                            // a held name is overwritten (his words)
-      current = name; await store.setCurrent(name);
+      await store.saveViewTblVwr(v);                                                            // a held name is overwritten (his words)
+      current = name; await store.setCurrentViewTblVwr(name);
       m.markView(v);
       paint();
     };
@@ -463,14 +465,14 @@
       if (!current) return;
       if (armed) {                                                                    // the arm guard of E12: free but not reversible (d31 a)
         clearTimeout(armed); const name = current;
-        await store.remove(name); current = ""; await store.setCurrent("");
+        await store.removeViewTblVwr(name); current = ""; await store.setCurrentViewTblVwr("");
         for (const m of mounts.values()) m.forgetView(name);                          // the table's settings stay as they are
         disarm(); paint(); return;
       }
       delBtn.textContent = "sure? delete view"; delBtn.classList.add("armed");
       armed = setTimeout(disarm, ARM_SECONDS * 1000);
     };
-    (async () => { current = (await store.current()) || ""; paint(); })();
+    (async () => { current = (await store.currentViewTblVwr()) || ""; paint(); })();
     viewListeners.add(paint);
     return box;
   }
