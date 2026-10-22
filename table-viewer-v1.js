@@ -1,6 +1,6 @@
 /* table-viewer v1 — one table, any shape.
    Spec of record: C:\dev\working_docs\projects\table-viewer\table-viewer-spec.md
-   (draft 7: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
+   (draft 10: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
    cited by slug). Section letters below cite it.
 
    mountTable(container, rows, spec) -> { update(rows), state, destroy() }
@@ -13,6 +13,15 @@
    TableViewer.mountTextSize(container) -> the A− A+ text-size pair (E14), once
    per page; container is an empty element in the page's pinned row 0, which
    becomes the pair. The pair sizes the whole page.
+   TableViewer.mountViewsTblVwr(container, { site, showSectionTblVwr, viewsStoreTblVwr })
+     -> the three saved-view widgets (E15: the View dropdown, save view, delete
+     view), once per page, in an empty element of the page's pinned row 0. A
+     saved view names its table (the spec's name) and the page's section for it
+     (the spec's section); choosing one calls showSectionTblVwr(section) and
+     restores that table's saved variables at once (the one named exception to
+     section D's single-writer rule). Views live per device under
+     tv:<site>:views behind the small store interface (list, get, save, remove,
+     current, setCurrent), which viewsStoreTblVwr replaces (ruling view-storage c).
 
    Build decisions beyond the spec are listed in
    projects\table-viewer\build-decisions-2026-09-22.md. No dependency; no build step. */
@@ -101,6 +110,9 @@
 .tv-probe { position: absolute; left: 0; top: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .tv-textsize { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; flex: none; }
 .tv-textsize button { min-width: 44px; }
+.tv-views { display: contents; }   /* E15: the three widgets are the page's row 0's own items, so the row wraps them one by one and never scrolls (G) */
+.tv-views select { max-width: min(60vw, 18em); }
+.tv-views button.armed { border-color: var(--tv-bad); color: var(--tv-bad); }
 `;
   let cssDone = false;
   function ensureCss() {
@@ -351,6 +363,117 @@
     return box;
   }
 
+  // ---------- saved views (E15, sections D and H; rulings of 2026-10-22) ----------
+  // One view = one table's saved variables under a name, plus the table's name
+  // and the page's section for it. Every mounted table registers under its
+  // spec name so a view can find it; the widgets repaint when any table's
+  // state is written (viewListeners), which is how the dropdown's fill shows
+  // whether the table still shows the chosen view (ruling view-drift-mark a).
+  const mounts = new Map();                                       // spec name -> mount handle
+  const viewListeners = new Set();
+  let lastTouched = null;                                         // the mount whose control was used last
+  // The store interface (ruling view-storage c): per device now, under one key
+  // per page holding every view by name; a page may pass another object with
+  // the same six methods, so a server store replaces this one without touching
+  // the widgets. Methods may return promises.
+  function localViewsStore(site) {
+    const key = "tv:" + site + ":views", curKey = "tv:" + site + ":view";
+    const read = () => { try { const o = JSON.parse(localStorage.getItem(key) || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } };
+    const write = (o) => { try { localStorage.setItem(key, JSON.stringify(o)); } catch (e) {} };
+    return {
+      list() { return Object.values(read()).filter((v) => v && typeof v.name === "string"); },
+      get(name) { return read()[name] || null; },
+      save(view) { const o = read(); o[view.name] = view; write(o); },
+      remove(name) { const o = read(); delete o[name]; write(o); },
+      current() { try { return localStorage.getItem(curKey) || ""; } catch (e) { return ""; } },
+      setCurrent(name) { try { if (name) localStorage.setItem(curKey, name); else localStorage.removeItem(curKey); } catch (e) {} },
+    };
+  }
+  // The settings a view holds, in one canonical string over the columns a table
+  // has now, so a view and a table's state compare as equal when the table
+  // shows the view (E15.1 post). Filters at All, blank bounds and keys of
+  // columns the table no longer has fall out on both sides.
+  function canonicalView(v, map) {
+    const f = {}; for (const k of Object.keys(v.f || {}).sort()) { const x = v.f[k]; if (x && x !== "all" && map.has(k)) f[k] = String(x); }
+    const n = {};
+    for (const k of Object.keys(v.n || {}).sort()) {
+      const b = v.n[k]; if (!b || !map.has(k)) continue;
+      const min = b.min == null ? "" : String(b.min), max = b.max == null ? "" : String(b.max);
+      if (min !== "" || max !== "") n[k] = { min, max };
+    }
+    const hidden = [...new Set(v.hidden || [])].filter((k) => map.has(k)).sort();
+    return JSON.stringify({ f, n, s_key: map.has(v.s_key) ? v.s_key : null, s_dir: v.s_dir === "asc" ? "asc" : "desc", hidden, g_key: v.g_key && v.g_key !== "none" && map.has(v.g_key) ? v.g_key : "none" });
+  }
+  function mountViewsTblVwr(container, opts) {
+    ensureCss(); opts = opts || {};
+    const box = typeof container === "string" ? document.querySelector(container) : container;
+    if (!box) throw new Error("table-viewer: views container not found");
+    const site = opts.site || (typeof location !== "undefined" ? location.pathname : "page");
+    const store = opts.viewsStoreTblVwr || localViewsStore(site);
+    const showSection = typeof opts.showSectionTblVwr === "function" ? opts.showSectionTblVwr : null;
+    box.classList.add("tv", "tv-views");
+    box.innerHTML = '<div class="tv-ctl"><label for="tvView">View</label><select id="tvView"></select></div>' +
+      '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvViewSave">save view</button></div>' +
+      '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvViewDel">delete view</button></div>';
+    const sel = box.querySelector("#tvView"), saveBtn = box.querySelector("#tvViewSave"), delBtn = box.querySelector("#tvViewDel");
+    let current = "", armed = null, views = [];
+    const disarm = () => { delBtn.textContent = "delete view"; delBtn.classList.remove("armed"); armed = null; };
+    // The table a save is of: the one whose control was used last while it is
+    // on screen, else the first table on screen (a section may hold two).
+    const onScreen = (m) => m && m.element.clientWidth > 0 && mounts.get(m.tableName) === m;
+    const pickMount = () => onScreen(lastTouched) ? lastTouched : ([...mounts.values()].find(onScreen) || null);
+    async function paint() {
+      views = (await store.list()).slice().sort((a, b) => String(b.saved_at || "").localeCompare(String(a.saved_at || ""))); // ruling view-order a: newest save first
+      if (!views.some((v) => v.name === current)) current = "";
+      const cur = views.find((v) => v.name === current) || null;
+      const live = cur && mounts.has(cur.table) ? mounts.get(cur.table) : null;
+      // ruling view-list-scope a: every view of the page, "name · table"; a view
+      // whose table is not mounted stays listed and deletable (missing-table a)
+      sel.innerHTML = '<option value="">—</option>' + views.map((v) => '<option value="' + esc(v.name) + '">' + esc(v.name) + " · " + esc(v.table || "?") + (mounts.has(v.table) ? "" : " (not on this page)") + "</option>").join("");
+      sel.value = current;
+      sel.disabled = !views.length;
+      sel.classList.toggle("na", !views.length || !!(cur && !live));                  // inapplicable (G)
+      sel.classList.toggle("user-set", !!(live && live.matchesView(cur)));            // mint while the table shows the view (view-drift-mark a)
+      delBtn.disabled = !cur; delBtn.classList.toggle("na", !cur);
+      if (!cur) disarm();
+    }
+    sel.onchange = async () => {
+      current = sel.value; await store.setCurrent(current); disarm();
+      const v = current ? await store.get(current) : null;
+      if (v && mounts.has(v.table)) {
+        if (v.section != null && showSection) showSection(v.section);               // the view's section first
+        mounts.get(v.table).applyView(v);                                           // then its settings, as a restore
+      }
+      paint();
+    };
+    saveBtn.onclick = async () => {
+      const m = pickMount();
+      if (!m) { alert("No table is on screen to save a view of."); return; }
+      const answer = prompt("Name this view", current || "");                       // prefilled with the chosen view, so a re-save overwrites it
+      if (answer == null) return;
+      const name = String(answer).trim(); if (!name) return;
+      const v = Object.assign({ name, saved_at: new Date().toISOString() }, m.snapshotView());
+      await store.save(v);                                                            // a held name is overwritten (his words)
+      current = name; await store.setCurrent(name);
+      m.markView(v);
+      paint();
+    };
+    delBtn.onclick = async () => {
+      if (!current) return;
+      if (armed) {                                                                    // the arm guard of E12: free but not reversible (d31 a)
+        clearTimeout(armed); const name = current;
+        await store.remove(name); current = ""; await store.setCurrent("");
+        for (const m of mounts.values()) m.forgetView(name);                          // the table's settings stay as they are
+        disarm(); paint(); return;
+      }
+      delBtn.textContent = "sure? delete view"; delBtn.classList.add("armed");
+      armed = setTimeout(disarm, ARM_SECONDS * 1000);
+    };
+    (async () => { current = (await store.current()) || ""; paint(); })();
+    viewListeners.add(paint);
+    return box;
+  }
+
   // ---------- mount ----------
   function mountTable(container, rows, spec) {
     ensureCss();
@@ -365,7 +488,9 @@
 
     // state
     const saved = loadState(spec);
-    const st = { f: {}, n: {}, s_key: null, s_dir: null, hidden: new Set(), seen: new Set(), g_key: "none", expanded: new Set(), openCells: new Set(), foldMode: "open", foldExceptions: new Set(), panel: null };
+    const st = { f: {}, n: {}, s_key: null, s_dir: null, hidden: new Set(), seen: new Set(), g_key: "none", expanded: new Set(), openCells: new Set(), foldMode: "open", foldExceptions: new Set(), panel: null,
+      view: null, viewDropped: [] };                                       // E15: the chosen view and the settings of it not applied (missing-column a)
+    const handle = { element: el, tableName: spec.name || "table" };
     if (saved) {
       st.f = saved.f || {}; st.n = saved.n || {}; st.s_key = saved.s_key; st.s_dir = saved.s_dir;
       st.hidden = new Set(saved.hidden || []); st.seen = new Set(saved.seen || []); st.g_key = saved.g_key || "none";
@@ -381,7 +506,10 @@
     }
     if (!st.s_key || !colByKey().has(st.s_key)) { const d = defaultSort(); st.s_key = d.key; st.s_dir = d.dir; }
     if (!st.s_dir) st.s_dir = defaultSort().dir;
-    const persist = () => saveState(spec, st);
+    // A control's write clears the view's not-applied list (named once, until the
+    // next change), marks this table as the one touched last, saves, and tells
+    // the saved-view widgets so the dropdown's fill follows the state.
+    const persist = (keepDropped) => { if (!keepDropped) st.viewDropped = []; lastTouched = handle; saveState(spec, st); for (const l of viewListeners) l(); };
 
     // dom skeleton; the probe at the end carries the fonts and paddings the
     // fit measures with (E8 rule 1)
@@ -690,9 +818,12 @@
 
     function renderCount(shown, fit) {
       const map = colByKey();
-      const parts = ["<b>" + shown.length.toLocaleString() + "</b> shown of " + data.length.toLocaleString() + " rows"];
+      const parts = [];
+      if (st.view && matchesView(st.view)) parts.push("view " + esc(st.view.name));   // E15.1 post: while the table shows the chosen view
+      parts.push("<b>" + shown.length.toLocaleString() + "</b> shown of " + data.length.toLocaleString() + " rows");
       for (const c of enumCols()) if (st.f[c.key] && st.f[c.key] !== "all") parts.push(esc(c.label) + " " + esc(st.f[c.key] === "" ? "(blank)" : st.f[c.key]));
       for (const c of numCols()) { const b = st.n[c.key]; if (!b) continue; if ((b.min ?? "") !== "") parts.push(esc(c.label) + " ≥ " + esc(b.min)); if ((b.max ?? "") !== "") parts.push(esc(c.label) + " ≤ " + esc(b.max)); }
+      if (st.view && st.viewDropped.length) parts.push("view " + esc(st.view.name) + ": not applied: " + st.viewDropped.map(esc).join(", "));   // missing-column a, named once
       if (st.g_key !== "none" && map.has(st.g_key)) parts.push("by " + esc(map.get(st.g_key).label));
       // E11: the fit of the last render and its trigger, the table's width
       if (fit) {
@@ -716,6 +847,47 @@
       renderCount(shown, fit);
     }
 
+    // ----- saved views (E15): this table's side -----
+    const stateView = () => ({ f: st.f, n: st.n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden], g_key: st.g_key });
+    const matchesView = (v) => !!v && canonicalView(v, colByKey()) === canonicalView(stateView(), colByKey());
+    // What save view writes: the table's name and section, the module's state
+    // version, and every saved variable of section D over the columns present.
+    function snapshotView() {
+      const map = colByKey();
+      const f = {}; for (const k of Object.keys(st.f)) if (st.f[k] && st.f[k] !== "all" && map.has(k)) f[k] = st.f[k];
+      const n = {}; for (const k of Object.keys(st.n)) { const b = st.n[k] || {}; if (!map.has(k)) continue; const min = b.min == null ? "" : String(b.min), max = b.max == null ? "" : String(b.max); if (min !== "" || max !== "") n[k] = { min, max }; }
+      return { table: handle.tableName, section: spec.section, state_version: STATE_VERSION, f, n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden].filter((k) => map.has(k)), g_key: st.g_key || "none" };
+    }
+    // Restoring a view (ruling missing-column a): every setting naming a column
+    // the table has applies; the rest are dropped and named once in the count
+    // line; the sort and the group fall to their defaults; a column the view
+    // never saw shows (d24 a); another state_version is applied the same way and
+    // never discarded. Writes every saved variable at once, as a reload does.
+    function applyView(v) {
+      const map = colByKey(); const dropped = [];
+      const nameOf = (k) => map.has(k) ? map.get(k).label : String(k).replace(/_/g, " ");
+      st.f = {};
+      for (const [k, x] of Object.entries(v.f || {})) { if (!x || x === "all") continue; const c = map.get(k); if (c && c.kind === "enum") st.f[k] = String(x); else dropped.push(nameOf(k) + " filter"); }
+      st.n = {};
+      for (const [k, b] of Object.entries(v.n || {})) {
+        if (!b) continue; const min = b.min == null ? "" : String(b.min), max = b.max == null ? "" : String(b.max); if (min === "" && max === "") continue;
+        const c = map.get(k); if (c && c.kind === "number") st.n[k] = { min, max }; else dropped.push(nameOf(k) + " bound");
+      }
+      if (v.s_key && map.has(v.s_key)) { st.s_key = v.s_key; st.s_dir = v.s_dir === "asc" ? "asc" : "desc"; }
+      else { if (v.s_key) dropped.push("sort by " + nameOf(v.s_key)); const d = defaultSort(); st.s_key = d.key; st.s_dir = d.dir; }
+      st.hidden = new Set();
+      for (const k of (v.hidden || [])) { if (map.has(k)) st.hidden.add(k); else dropped.push(nameOf(k) + " hidden"); }
+      for (const c of cols) st.seen.add(c.key);
+      const g = v.g_key || "none"; const gc = map.get(g);
+      if (g === "none") st.g_key = "none"; else if (gc && gc.kind === "enum") st.g_key = g; else { st.g_key = "none"; dropped.push("group by " + nameOf(g)); }
+      st.foldExceptions.clear(); st.expanded.clear(); st.openCells.clear(); st.panel = null;
+      st.view = v; st.viewDropped = dropped;
+      persist(true); render();
+      return dropped;
+    }
+    const markView = (v) => { st.view = v; st.viewDropped = []; render(); };           // after save view: the table now shows this view
+    const forgetView = (name) => { if (st.view && st.view.name === name) { st.view = null; st.viewDropped = []; render(); } };
+
     // Width changes re-render: a window resize, and the container itself
     // changing size, which is how a section hidden at mount (width 0) gets its
     // real width when its section is shown.
@@ -724,15 +896,19 @@
     let ro = null;
     if (window.ResizeObserver) { ro = new ResizeObserver(onResize); ro.observe(el); }
     renderers.add(render);
+    mounts.set(handle.tableName, handle);                                 // E15: a view finds its table by the spec's name
+    for (const l of viewListeners) l();                                   // the widgets, mounted before the tables, list this one as present
     render();
 
-    return {
+    return Object.assign(handle, {
       state: st,
-      update(newRows) { data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(); render(); },
-      destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); renderers.delete(render); el.innerHTML = ""; el.classList.remove("tv"); },
-    };
+      update(newRows) { data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(true); render(); },
+      destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); renderers.delete(render); if (mounts.get(handle.tableName) === handle) mounts.delete(handle.tableName); el.innerHTML = ""; el.classList.remove("tv"); },
+      snapshotView, applyView, markView, forgetView, matchesView,
+    });
   }
 
-  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, inferColumns, inferKind };
+  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, mountViewsTblVwr, inferColumns, inferKind };
   window.mountTable = mountTable;
+  window.mountViewsTblVwr = mountViewsTblVwr;
 })();
