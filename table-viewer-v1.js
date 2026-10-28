@@ -3,11 +3,17 @@
    (draft 10: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
    cited by slug). Section letters below cite it.
 
-   mountTable(container, rows, spec) -> { update(rows), state, destroy() }
+   mountTable(container, rows, spec, meta) -> { update(rows, meta), state, destroy() }
      container: element. rows: array of row objects. spec (optional, section B):
        name, identity, sort {key, dir}, site, columns [{key, label, unit, decimals,
        kind, text, visible, render, mark}], actions [{label, when, route, method,
        payload, guard, done, input}], request(action, row, body), afterAction(...).
+     meta (optional): { sourceCount }, the rows the source holds, so the count
+       line shows a read that came back short (ruling read-paging b, 2026-10-28).
+   Group and then-group offer every column (rulings group-by-scope-reach c and
+   group-viability a of 2026-10-27): groupingOf picks each column's form, by
+   value, letter ranges, value bands or periods, and grades it by the number of
+   groups and the rows per group; Sort carries a then-sort for ties (d17 b).
    TableViewer.actionButton(action, row, spec) -> button element, the same guard
    mechanics for a page's own rows (the ops page's Limits campaign rows).
    TableViewer.mountTextSize(container) -> the A− A+ text-size pair (E14), once
@@ -32,7 +38,16 @@
   const STATE_VERSION = 1;
   // Section P lists every constant with its rule and effect; the ops page's
   // Code constants table lists the same rows.
-  const ENUM_MAX_DISTINCT = 12;            // d8 a: the sheet_shape.py rule
+  // The category test no longer caps the distinct values (group-viability a,
+  // 2026-10-27, retiring d8 a's 12): a column whose values repeat is a category.
+  const GROUPS_GOOD_MIN = 5;               // group-viability a: 5 to 20 groups is the useful range (Mike's figures)
+  const GROUPS_GOOD_MAX = 20;              // group-viability a; also the most groups a form aims at
+  const ROWS_PER_GROUP_MIN = 2;            // group-viability a: fewer rows a group than this is one row per group
+  const FINER_FACTOR = 10;                 // d4 a: the finer entry aims at groups one order of magnitude smaller
+  const FINER_ABOVE_ROWS = 100;            // d4 a: the finer entry is offered above this many rows (Mike's n > 100)
+  const ZERO_BAND_MIN_SHARE = 0.1;         // d4 a: zero gets its own band when it holds this share of the values
+  const FOLD_CLOSED_ABOVE_ROWS = 100;      // d5 b: a grouping applied to more rows than this opens folded
+  const FILTER_FIND_ABOVE = 20;            // group-viability a: a filter dropdown longer than this gets a find box
   const IDENTITY_OWN_LINE_ABOVE_PERCENT = 50; // E9 case 2; rule: section P (retires IDENTITY_OWN_LINE_MIN_CHARS)
   const ARM_SECONDS = 5;                   // E12: an armed button disarms after this
   const TEXT_FLOOR_PX = 16;                // G: Text is black and big enough
@@ -93,6 +108,8 @@
 .tv-table tr.tv-identline + tr td { padding-top: 2px; }
 .tv-table tr.tv-group td { text-align: left; color: var(--tv-accent); font-weight: 700; padding-top: 14px; background: var(--tv-card2); }
 .tv-table tr.tv-group td button { min-height: 32px; padding: 2px 8px; margin-right: 8px; }
+.tv-table tr.tv-group2 td { padding-left: 28px; padding-top: 8px; font-weight: 600; background: var(--tv-card); }   /* the inner level (d9 a), indented under its outer group */
+.tv-find { margin-top: 4px; max-width: min(60vw, 18em); }
 .tv-table tr.tv-foldline td { text-align: left; white-space: normal; background: var(--tv-card2); border-bottom: 1px solid var(--tv-line); }
 .tv-table tr.tv-foldline .tv-field { display: block; padding: 2px 0; overflow-wrap: break-word; }
 .tv-table tr.tv-foldline .tv-field b { color: var(--tv-dim); font-weight: 600; margin-right: 6px; }
@@ -125,6 +142,8 @@
   // ---------- helpers ----------
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const isBlank = (v) => v === null || v === undefined || v === "";
+  // A json or array value reads as compact JSON, never "[object Object]".
+  const asText = (v) => v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
   const KEYLIKE = /^[A-Za-z0-9_.:-]{1,80}$/;
   const DATELIKE = /^\d{4}-\d{2}-\d{2}/;
   const NUMLIKE = /^-?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?([eE][-+]?\d+)?$/;
@@ -148,14 +167,14 @@
   function inferKind(values) {
     const filled = values.filter((v) => !isBlank(v));
     if (!filled.length) return "empty";
-    const distinct = new Set(filled.map((v) => String(v))).size;
+    const distinct = new Set(filled.map(asText)).size;
     // bool, date and number come before id: a metric column with all-distinct
     // values is a metric, not a key (found in the first browser test).
     if (filled.every((v) => asBool(v) !== null)) return "bool";
     if (filled.every((v) => asDate(v) !== null)) return "date";
     if (filled.every((v) => asNumber(v) !== null)) return "number";
     if (filled.length === values.length && distinct === filled.length && filled.every((v) => KEYLIKE.test(String(v)))) return "id";
-    if (distinct <= ENUM_MAX_DISTINCT && distinct <= values.length / 2 && filled.length >= 3) return "enum"; // d18 b
+    if (distinct <= values.length / 2 && filled.length >= 3) return "enum"; // d18 b; no cap on the count (group-viability a)
     return "text";
   }
   function inferDecimals(values) {
@@ -205,7 +224,8 @@
     } catch (e) { return null; }
   }
   function saveState(spec, st) {
-    try { localStorage.setItem(stateKey(spec), JSON.stringify({ v: STATE_VERSION, f: st.f, n: st.n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden], seen: [...st.seen], g_key: st.g_key })); } catch (e) {}
+    try { localStorage.setItem(stateKey(spec), JSON.stringify({ v: STATE_VERSION, f: st.f, n: st.n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden], seen: [...st.seen], g_key: st.g_key,
+      g_fine: st.g_fine, g2_key: st.g2_key, g2_fine: st.g2_fine, s2_key: st.s2_key, s2_dir: st.s2_dir })); } catch (e) {}   // the second five are additive (2026-10-28): a state without them reads as none
   }
 
   // ---------- formatting ----------
@@ -214,7 +234,7 @@
     if (col.kind === "number") { const n = asNumber(v); return n === null ? esc(v) : n.toLocaleString(undefined, { minimumFractionDigits: col.decimals, maximumFractionDigits: col.decimals }); }
     if (col.kind === "date") { const s = String(v); return esc(s.length > 10 && /T/.test(s) ? s.slice(0, 10) : s); }
     if (col.kind === "bool") { const b = asBool(v); return b === null ? esc(v) : b ? "yes" : "no"; }
-    return esc(v);
+    return esc(asText(v));
   }
   function cellHtml(col, row) {
     const v = row[col.key];
@@ -233,7 +253,7 @@
     if (col.kind === "number") { const n = asNumber(v); return n === null ? String(v) : n.toLocaleString(undefined, { minimumFractionDigits: col.decimals, maximumFractionDigits: col.decimals }); }
     if (col.kind === "date") { const s = String(v); return s.length > 10 && /T/.test(s) ? s.slice(0, 10) : s; }
     if (col.kind === "bool") { const b = asBool(v); return b === null ? String(v) : b ? "yes" : "no"; }
-    return String(v);
+    return asText(v);
   }
   function compareBy(col, dir) {
     const sign = dir === "asc" ? 1 : -1;
@@ -246,6 +266,120 @@
       if (col.kind === "bool") return sign * ((asBool(x) ? 1 : 0) - (asBool(y) ? 1 : 0));
       return sign * String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" });
     };
+  }
+
+  // ---------- grouping (E6; rulings group-by-scope-reach c, group-viability a,
+  // d3 b, d4 a, d11 c of 2026-10-27 and 2026-10-28) ----------
+  // groupingOf(col, rows, finer) -> { words, groups, grade, of(row) -> group label }
+  // Every column groups; the form follows the column:
+  //   by value     2 to GROUPS_GOOD_MAX values that repeat, and every bool;
+  //   periods      dates and YYYY or YYYY-MM strings, by day, month or year, the
+  //                finest grain at GROUPS_GOOD_MAX groups or fewer (d11 c);
+  //   value bands  numbers: equal-count bands of a 1, 2 or 5 x 10^k row count,
+  //                tied values kept in one band, zero a band of its own when it
+  //                holds ZERO_BAND_MIN_SHARE of the values (d4 a);
+  //   letters      text and ids by the first letter or digit, accents and
+  //                leading punctuation set aside, thin neighbours merged into
+  //                ranges so no more than GROUPS_GOOD_MAX groups (d3 b).
+  // finer aims at FINER_FACTOR times the groups (d4 a: an order of magnitude
+  // smaller groups). The grade reads the group count and the rows per group.
+  const BLANK_GROUP = "(blank)";
+  const PERIODLIKE = /^\d{4}(-\d{2})?$/;
+  function gradeOf(groups, rows) {
+    if (groups >= GROUPS_GOOD_MIN && groups <= GROUPS_GOOD_MAX && rows / groups >= ROWS_PER_GROUP_MIN) return "good";
+    if (groups >= 2 && rows / groups >= ROWS_PER_GROUP_MIN) return "possible";
+    return "useless";
+  }
+  function fmtNumber(col, n) { return n.toLocaleString(undefined, { minimumFractionDigits: col.decimals, maximumFractionDigits: col.decimals }); }
+  function byValue(col, rows) {
+    const label = (v) => isBlank(v) ? BLANK_GROUP : col.kind === "bool" ? (asBool(v) === null ? asText(v) : asBool(v) ? "yes" : "no") : col.kind === "number" && asNumber(v) !== null ? fmtNumber(col, asNumber(v)) : asText(v);
+    return { words: "by value", of: (r) => label(r[col.key]) };
+  }
+  function periodOf(v, grain) {
+    let s;
+    if (typeof v === "string" && PERIODLIKE.test(v.trim())) s = v.trim();
+    else { const t = asDate(v); if (t === null) return null; s = new Date(t).toISOString(); }
+    const len = grain === "year" ? 4 : grain === "month" ? 7 : 10;
+    return s.length >= len ? s.slice(0, len) : null;
+  }
+  function byPeriod(col, rows, maxGroups) {
+    const vals = rows.map((r) => r[col.key]).filter((v) => !isBlank(v));
+    const grains = ["day", "month", "year"].filter((g) => vals.some((v) => periodOf(v, g) !== null) && vals.every((v) => periodOf(v, g) !== null));
+    let grain = grains[grains.length - 1] || "year";
+    for (const g of grains) { if (new Set(vals.map((v) => periodOf(v, g))).size <= maxGroups) { grain = g; break; } }
+    return { words: "by " + grain, of: (r) => { const v = r[col.key]; return isBlank(v) ? BLANK_GROUP : periodOf(v, grain) || asText(v); } };
+  }
+  function byBands(col, rows, maxGroups) {
+    const nums = rows.map((r) => asNumber(r[col.key])).filter((n) => n !== null).sort((a, b) => a - b);
+    const zeros = nums.filter((n) => n === 0).length;
+    const zeroBand = zeros > 0 && zeros < nums.length && zeros >= ZERO_BAND_MIN_SHARE * nums.length;
+    const rest = zeroBand ? nums.filter((n) => n !== 0) : nums;
+    const room = Math.max(1, maxGroups - (zeroBand ? 1 : 0) - (nums.length < rows.length ? 1 : 0));   // the zero and blank groups count toward the most
+    let size = 1;
+    for (let k = 1; Math.ceil(rest.length / size) > room; k++) size = [1, 2, 5][k % 3] * Math.pow(10, Math.floor(k / 3));
+    const bands = [];
+    for (let i = 0; i < rest.length;) {
+      let j = Math.min(i + size, rest.length) - 1;
+      while (j + 1 < rest.length && rest[j + 1] === rest[j]) j++;   // a tie stays in one band
+      bands.push({ lo: rest[i], hi: rest[j] }); i = j + 1;
+    }
+    const name = (b) => b.lo === b.hi ? fmtNumber(col, b.lo) : fmtNumber(col, b.lo) + " – " + fmtNumber(col, b.hi);
+    const of = (r) => {
+      const n = asNumber(r[col.key]); if (n === null) return BLANK_GROUP;
+      if (zeroBand && n === 0) return fmtNumber(col, 0);
+      let lo = 0, hi = bands.length - 1;                          // the first band whose top is at or above n
+      while (lo < hi) { const m = (lo + hi) >> 1; if (bands[m].hi >= n) hi = m; else lo = m + 1; }
+      return bands.length ? name(bands[lo]) : BLANK_GROUP;
+    };
+    return { words: "bands of ~" + size.toLocaleString() + (size === 1 ? " row" : " rows"), of };
+  }
+  const LETTER = /[\p{L}\p{N}]/u;
+  function letterUnit(v, len) {
+    const s = asText(v).normalize("NFD").replace(/\p{M}/gu, "");   // É sorts as E
+    const i = s.search(LETTER); if (i < 0) return "#";
+    if (/\p{N}/u.test(s[i])) return "0–9";
+    let u = s[i].toUpperCase();
+    if (len > 1 && s[i + 1] && LETTER.test(s[i + 1])) u += s[i + 1].toLowerCase();
+    return u;
+  }
+  const unitRank = (u) => u === "0–9" ? 0 : u === "#" ? 3 : /^[A-Z]/.test(u) ? 1 : 2;
+  function byLetters(col, rows, maxGroups, finer) {
+    const vals = rows.map((r) => r[col.key]).filter((v) => !isBlank(v));
+    const countUnits = (len) => { const m = new Map(); for (const v of vals) { const u = letterUnit(v, len); m.set(u, (m.get(u) || 0) + 1); } return m; };
+    let len = finer ? 2 : 1, counts = countUnits(len);
+    // every value starting alike (one letter holds more than half, or fewer
+    // than GROUPS_GOOD_MIN letters in all): the second letter separates them
+    if (!finer && vals.length >= 2 * GROUPS_GOOD_MIN && (counts.size < GROUPS_GOOD_MIN || Math.max(...counts.values()) > vals.length / 2)) { len = 2; counts = countUnits(len); }
+    const units = [...counts.keys()].sort((a, b) => unitRank(a) - unitRank(b) || a.localeCompare(b));
+    // phone-book merge: walk the units in order and close a range once it holds
+    // its share of the rows; a unit holding a share by itself stands alone, and
+    // ranges never join digits, letters and symbols
+    const target = vals.length / Math.max(1, maxGroups - (vals.length < rows.length ? 1 : 0));   // the blank group counts toward the most
+    const groupOf = new Map(); let run = [], acc = 0;
+    const close = () => { if (!run.length) return; const lab = run.length === 1 ? run[0] : run[0] + "–" + run[run.length - 1]; for (const u of run) groupOf.set(u, lab); run = []; acc = 0; };
+    units.forEach((u, i) => {
+      if (run.length && (unitRank(run[0]) !== unitRank(u) || counts.get(u) >= target)) close();
+      run.push(u); acc += counts.get(u);
+      if (acc >= target || i === units.length - 1) close();
+    });
+    return { words: len > 1 ? "two letters" : "letters", of: (r) => { const v = r[col.key]; return isBlank(v) ? BLANK_GROUP : groupOf.get(letterUnit(v, len)) || "#"; } };
+  }
+  function groupingOf(col, rows, finer) {
+    const vals = rows.map((r) => r[col.key]).filter((v) => !isBlank(v));
+    // the most groups a form aims at, never so many that a group holds fewer
+    // than ROWS_PER_GROUP_MIN rows on average
+    const maxGroups = Math.max(1, Math.min(finer ? GROUPS_GOOD_MAX * FINER_FACTOR : GROUPS_GOOD_MAX, Math.floor(rows.length / ROWS_PER_GROUP_MIN)));
+    const distinct = new Set(vals.map(asText)).size;
+    const period = col.kind === "date" || (vals.length > 0 && vals.every((v) => typeof v === "string" && PERIODLIKE.test(v.trim())));
+    let g;
+    if (col.kind === "bool") g = finer ? null : byValue(col, rows);
+    else if (period) g = byPeriod(col, rows, maxGroups);
+    else if (distinct >= 2 && distinct <= GROUPS_GOOD_MAX && rows.length / distinct >= ROWS_PER_GROUP_MIN) g = finer ? null : byValue(col, rows);
+    else if (col.kind === "number") g = byBands(col, rows, maxGroups);
+    else g = byLetters(col, rows, maxGroups, finer);
+    if (!g) return null;
+    const groups = new Set(rows.map(g.of)).size;
+    return Object.assign(g, { groups, grade: gradeOf(groups, rows.length) });
   }
 
   // ---------- measurement (E8 rule 1) ----------
@@ -404,7 +538,12 @@
       if (min !== "" || max !== "") n[k] = { min, max };
     }
     const hidden = [...new Set(v.hidden || [])].filter((k) => map.has(k)).sort();
-    return JSON.stringify({ f, n, s_key: map.has(v.s_key) ? v.s_key : null, s_dir: v.s_dir === "asc" ? "asc" : "desc", hidden, g_key: v.g_key && v.g_key !== "none" && map.has(v.g_key) ? v.g_key : "none" });
+    const g_key = v.g_key && v.g_key !== "none" && map.has(v.g_key) ? v.g_key : "none";
+    const g2_key = g_key !== "none" && v.g2_key && v.g2_key !== "none" && v.g2_key !== g_key && map.has(v.g2_key) ? v.g2_key : "none";
+    const s_key = map.has(v.s_key) ? v.s_key : null;
+    const s2_key = v.s2_key && v.s2_key !== "none" && v.s2_key !== s_key && map.has(v.s2_key) ? v.s2_key : "none";
+    return JSON.stringify({ f, n, s_key, s_dir: v.s_dir === "asc" ? "asc" : "desc", hidden, g_key, g_fine: g_key !== "none" && !!v.g_fine,
+      g2_key, g2_fine: g2_key !== "none" && !!v.g2_fine, s2_key, s2_dir: s2_key !== "none" && v.s2_dir === "desc" ? "desc" : "asc" });
   }
   function mountViewsTblVwr(container, opts) {
     ensureCss(); opts = opts || {};
@@ -478,9 +617,10 @@
   }
 
   // ---------- mount ----------
-  function mountTable(container, rows, spec) {
+  function mountTable(container, rows, spec, meta) {
     ensureCss();
     spec = spec || {};
+    let sourceCount = meta && Number.isFinite(meta.sourceCount) ? meta.sourceCount : null;   // read-paging b
     const el = typeof container === "string" ? document.querySelector(container) : container;
     if (!el) throw new Error("table-viewer: container not found");
     el.classList.add("tv");
@@ -492,11 +632,15 @@
     // state
     const saved = loadState(spec);
     const st = { f: {}, n: {}, s_key: null, s_dir: null, hidden: new Set(), seen: new Set(), g_key: "none", expanded: new Set(), openCells: new Set(), foldMode: "open", foldExceptions: new Set(), panel: null,
+      g_fine: false, g2_key: "none", g2_fine: false, s2_key: "none", s2_dir: "asc",   // then-group (d9 a) and then-sort (d17 b); fine = the finer entry (d4 a)
+      innerOpen: new Set(),                                                // inner groups opened by a tap; closed otherwise (d16 a)
       view: null, viewDropped: [] };                                       // E15: the chosen view and the settings of it not applied (missing-column a)
     const handle = { element: el, tableName: spec.name || "table" };
     if (saved) {
       st.f = saved.f || {}; st.n = saved.n || {}; st.s_key = saved.s_key; st.s_dir = saved.s_dir;
       st.hidden = new Set(saved.hidden || []); st.seen = new Set(saved.seen || []); st.g_key = saved.g_key || "none";
+      st.g_fine = !!saved.g_fine; st.g2_key = saved.g2_key || "none"; st.g2_fine = !!saved.g2_fine;
+      st.s2_key = saved.s2_key || "none"; st.s2_dir = saved.s2_dir === "desc" ? "desc" : "asc";
     } else {
       for (const c of cols) if (!c.visible) st.hidden.add(c.key);        // d23 b at first open
     }
@@ -509,6 +653,10 @@
     }
     if (!st.s_key || !colByKey().has(st.s_key)) { const d = defaultSort(); st.s_key = d.key; st.s_dir = d.dir; }
     if (!st.s_dir) st.s_dir = defaultSort().dir;
+    // d5 b: a grouping opens folded over more than FOLD_CLOSED_ABOVE_ROWS rows,
+    // open otherwise; set when the grouping is chosen, restored or loaded.
+    const resetFold = () => { st.foldMode = data.length > FOLD_CLOSED_ABOVE_ROWS ? "closed" : "open"; st.foldExceptions.clear(); st.innerOpen.clear(); };
+    if (st.g_key !== "none") resetFold();
     // A control's write clears the view's not-applied list (named once, until the
     // next change), marks this table as the one touched last, saves, and tells
     // the saved-view widgets so the dropdown's fill follows the state.
@@ -527,6 +675,15 @@
     const enumCols = () => cols.filter((c) => c.kind === "enum");
     const numCols = () => cols.filter((c) => c.kind === "number");
     const visibleCols = () => cols.filter((c) => !st.hidden.has(c.key));
+    // The table's order: the sort, then the then-sort on its ties (d17 b).
+    function rowCompare() {
+      const map = colByKey();
+      const first = compareBy(map.get(st.s_key), st.s_dir);
+      const c2 = st.s2_key !== "none" && st.s2_key !== st.s_key ? map.get(st.s2_key) : null;
+      if (!c2) return first;
+      const second = compareBy(c2, st.s2_dir);
+      return (a, b) => first(a, b) || second(a, b);
+    }
 
     function passesFilters(row, exceptKey) {
       for (const c of enumCols()) {
@@ -552,21 +709,71 @@
       return '<div class="tv-ctl"><label for="' + id + '">' + esc(label) + '</label><select id="' + id + '" class="' + fill + '">' +
         options.map((o) => '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(value) ? " selected" : "") + ">" + esc(o[1]) + "</option>").join("") + "</select></div>";
     }
-    function renderControls() {
+    // The Group and then-group entries (group-viability a): every column, its
+    // form and group count over the rows shown, the good ones first, then the
+    // possible ones, then a divider and the rest; above FINER_ABOVE_ROWS rows a
+    // column whose groups can be an order of magnitude smaller has a second,
+    // finer entry (d4 a). An entry's value is the key, or the key and FINE_TAG.
+    const FINE_TAG = "\u001ffine";
+    let groupCache = new Map();
+    function groupingFor(key, fine, shown) {
+      const ck = key + (fine ? FINE_TAG : "");
+      if (!groupCache.has(ck)) { const c = colByKey().get(key); groupCache.set(ck, c ? groupingOf(c, shown, fine) : null); }
+      return groupCache.get(ck);
+    }
+    function groupEntries(shown, exceptKey) {
+      const plural = (n) => n.toLocaleString() + (n === 1 ? " group" : " groups");
+      const out = [];
+      for (const c of cols) {
+        if (c.key === exceptKey) continue;
+        const g = groupingFor(c.key, false, shown); if (!g) continue;
+        out.push({ value: c.key, label: c.label + " · " + g.words + " · " + plural(g.groups), grade: g.grade });
+        if (shown.length > FINER_ABOVE_ROWS) {
+          const f = groupingFor(c.key, true, shown);
+          if (f && f.words !== g.words && f.groups > g.groups) out.push({ value: c.key + FINE_TAG, label: c.label + " · " + f.words + " · " + plural(f.groups), grade: f.grade });
+        }
+      }
+      const rank = { good: 0, possible: 1, useless: 2 };
+      return out.map((e, i) => [e, i]).sort((a, b) => rank[a[0].grade] - rank[b[0].grade] || a[1] - b[1]).map(([e]) => e);
+    }
+    function groupSelect(id, label, entries, value, fill, disabled) {
+      let opts = '<option value="none"' + (value === "none" ? " selected" : "") + ">None</option>", divided = false;
+      for (const e of entries) {
+        if (e.grade === "useless" && !divided) { opts += '<option disabled value="">— less useful —</option>'; divided = true; }
+        opts += '<option value="' + esc(e.value) + '"' + (e.value === value ? " selected" : "") + ">" + esc(e.label) + "</option>";
+      }
+      return '<div class="tv-ctl"><label for="' + id + '">' + esc(label) + '</label><select id="' + id + '" class="' + fill + '"' + (disabled ? " disabled" : "") + ">" + opts + "</select></div>";
+    }
+    const groupValue = (key, fine) => key === "none" ? "none" : key + (fine ? FINE_TAG : "");
+    const parseGroup = (v) => { const fine = String(v).endsWith(FINE_TAG); return { key: fine ? String(v).slice(0, -FINE_TAG.length) : String(v), fine }; };
+
+    function renderControls(shown) {
       const map = colByKey();
-      // row 1: enum filters in display order, then the narrow chip (F.2)
-      let h = "";
+      // row 1: enum filters in display order, then the narrow chip (F.2); a
+      // dropdown longer than FILTER_FIND_ABOVE carries a find box that narrows
+      // its entries as you type (group-viability a)
+      let h = ""; const filterOpts = new Map();
       for (const c of enumCols()) {
         const counts = new Map();
         for (const r of data) if (passesFilters(r, c.key)) { const k = String(r[c.key] ?? ""); counts.set(k, (counts.get(k) || 0) + 1); }
         const opts = [["all", "All"]].concat([...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => [k, (k === "" ? "(blank)" : k) + " (" + n + ")"]));
         const val = st.f[c.key] || "all";
-        h += selectCtl("tvf-" + c.key, c.label, opts, val, val === "all" ? "" : "user-set");
+        let s = selectCtl("tvf-" + c.key, c.label, opts, val, val === "all" ? "" : "user-set");
+        if (opts.length - 1 > FILTER_FIND_ABOVE) { s = s.slice(0, -"</div>".length) + '<input type="search" class="tv-find" id="tvff-' + esc(c.key) + '" placeholder="find" aria-label="find in ' + esc(c.label) + '"></div>'; filterOpts.set(c.key, opts); }
+        h += s;
       }
       const anyBound = numCols().some((c) => st.n[c.key] && ((st.n[c.key].min ?? "") !== "" || (st.n[c.key].max ?? "") !== ""));
       h += '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvNarrow" class="' + (numCols().length ? (anyBound ? "user-set" : "") : "na") + '"' + (numCols().length ? "" : " disabled") + '>narrow' + (st.panel === "narrow" ? " ▴" : "") + "</button></div>";
       q(".tv-row1").innerHTML = h;
       for (const c of enumCols()) q("#tvf-" + CSS_escape(c.key)).onchange = (e) => { st.f[c.key] = e.target.value; persist(); render(); };
+      for (const [k, opts] of filterOpts) {
+        const box = q("#tvff-" + CSS_escape(k)), sel = q("#tvf-" + CSS_escape(k));
+        box.oninput = () => {
+          const t = box.value.trim().toLowerCase(), val = sel.value;
+          sel.innerHTML = opts.filter((o, i) => i === 0 || o[0] === val || o[1].toLowerCase().includes(t))
+            .map((o) => '<option value="' + esc(o[0]) + '"' + (o[0] === val ? " selected" : "") + ">" + esc(o[1]) + "</option>").join("");
+        };
+      }
       q("#tvNarrow").onclick = () => { st.panel = st.panel === "narrow" ? null : "narrow"; render(); };
 
       // narrow panel (E3)
@@ -579,18 +786,35 @@
       }).join("") || '<div class="tv-empty">No metric columns.</div>';
       np.querySelectorAll("input").forEach((inp) => { inp.onchange = () => { const k = inp.dataset.k; st.n[k] = st.n[k] || {}; st.n[k][inp.dataset.b] = inp.value; persist(); render(); }; });
 
-      // row 2: Group, Sort, Dir, Headers fold (F.3)
-      const gOpts = [["none", "None"]].concat(enumCols().map((c) => [c.key, c.label]));
+      // row 2: Group, Then group, Sort, Dir, Then sort, its Dir, Headers fold (F.3;
+      // d9 a, d17 b). Then group is inapplicable until Group is set; neither
+      // second control offers the first one's column.
+      const grouped = st.g_key !== "none";
+      const g1 = groupEntries(shown, null), g2 = grouped ? groupEntries(shown, st.g_key) : [];
       const sOpts = cols.map((c) => [c.key, c.label]);
-      let h2 = selectCtl("tvGroup", "Group", gOpts, st.g_key, enumCols().length ? (st.g_key !== "none" ? "user-set" : "") : "na") +
+      const s2Opts = [["none", "None"]].concat(cols.filter((c) => c.key !== st.s_key).map((c) => [c.key, c.label]));
+      const sorted2 = st.s2_key !== "none";
+      let h2 = groupSelect("tvGroup", "Group", g1, groupValue(st.g_key, st.g_fine), grouped ? "user-set" : "", false) +
+        groupSelect("tvGroup2", "Then group", g2, groupValue(st.g2_key, st.g2_fine), grouped ? (st.g2_key !== "none" ? "user-set" : "") : "na", !grouped) +
         selectCtl("tvSort", "Sort", sOpts, st.s_key, "") +
-        '<div class="tv-ctl"><label>Dir</label><button type="button" id="tvDir">' + (st.s_dir === "asc" ? "▲ asc" : "▼ desc") + "</button></div>";
-      if (st.g_key !== "none") h2 += '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvFold" class="' + (st.foldMode === "closed" ? "user-set" : "") + '">' + (st.foldMode === "closed" ? "expand" : "collapse") + "</button></div>";
+        '<div class="tv-ctl"><label>Dir</label><button type="button" id="tvDir">' + (st.s_dir === "asc" ? "▲ asc" : "▼ desc") + "</button></div>" +
+        selectCtl("tvSort2", "Then sort", s2Opts, st.s2_key, sorted2 ? "user-set" : "") +
+        '<div class="tv-ctl"><label>Dir</label><button type="button" id="tvDir2" class="' + (sorted2 ? "" : "na") + '"' + (sorted2 ? "" : " disabled") + ">" + (st.s2_dir === "asc" ? "▲ asc" : "▼ desc") + "</button></div>";
+      if (grouped) h2 += '<div class="tv-ctl"><label>&nbsp;</label><button type="button" id="tvFold" class="' + (st.foldMode === "closed" ? "user-set" : "") + '">' + (st.foldMode === "closed" ? "expand" : "collapse") + "</button></div>";
       q(".tv-row2").innerHTML = h2;
-      q("#tvGroup").onchange = (e) => { st.g_key = e.target.value; st.foldExceptions.clear(); persist(); render(); };
-      q("#tvSort").onchange = (e) => { st.s_key = e.target.value; const c = map.get(st.s_key); st.s_dir = c && c.kind === "number" ? "desc" : "asc"; persist(); render(); };
+      q("#tvGroup").onchange = (e) => {
+        const g = parseGroup(e.target.value); st.g_key = g.key; st.g_fine = g.fine;
+        if (st.g_key === "none" || st.g2_key === st.g_key) { st.g2_key = "none"; st.g2_fine = false; }
+        if (st.g_key !== "none") resetFold();
+        persist(); render();
+      };
+      q("#tvGroup2").onchange = (e) => { const g = parseGroup(e.target.value); st.g2_key = g.key; st.g2_fine = g.fine; st.innerOpen.clear(); persist(); render(); };
+      q("#tvSort").onchange = (e) => { st.s_key = e.target.value; const c = map.get(st.s_key); st.s_dir = c && c.kind === "number" ? "desc" : "asc"; if (st.s2_key === st.s_key) st.s2_key = "none"; persist(); render(); };
       q("#tvDir").onclick = () => { st.s_dir = st.s_dir === "asc" ? "desc" : "asc"; persist(); render(); };
-      const fb = q("#tvFold"); if (fb) fb.onclick = () => { st.foldMode = st.foldMode === "closed" ? "open" : "closed"; st.foldExceptions.clear(); render(); };
+      q("#tvSort2").onchange = (e) => { st.s2_key = e.target.value; const c = map.get(st.s2_key); st.s2_dir = c && c.kind === "number" ? "desc" : "asc"; persist(); render(); };
+      q("#tvDir2").onclick = () => { if (st.s2_key === "none") return; st.s2_dir = st.s2_dir === "asc" ? "desc" : "asc"; persist(); render(); };
+      // the chip flips the outer level and closes every inner group (d9 a, d16 a)
+      const fb = q("#tvFold"); if (fb) fb.onclick = () => { st.foldMode = st.foldMode === "closed" ? "open" : "closed"; st.foldExceptions.clear(); st.innerOpen.clear(); render(); };
 
       // row 3: columns chip (F.4) and its panel with the All line (E5)
       const idk = identityKey();
@@ -619,7 +843,8 @@
     let scale = 1, calibrated = false;
     // E9 case 2: an identity is long when its drawn width passes this share of the table's width
     const isLongIdent = (r, idkCol, width, m) => !!idkCol && m.w(m.f.txt, plainCell(idkCol, r)) > width * IDENTITY_OWN_LINE_ABOVE_PERCENT / 100;
-    const headText = (c) => c.label + (c.unit ? " " + c.unit : "") + (c.key === st.s_key ? (st.s_dir === "asc" ? " ▴" : " ▾") : "");
+    // the sort's arrow solid, the then-sort's hollow (d17 b)
+    const headText = (c) => c.label + (c.unit ? " " + c.unit : "") + (c.key === st.s_key ? (st.s_dir === "asc" ? " ▴" : " ▾") : c.key === st.s2_key ? (st.s2_dir === "asc" ? " ▵" : " ▿") : "");
     function measurer() {
       const p = (s) => el.querySelector(".tv-probe " + s);
       const num = p("td.tv-num"), fold = p("button.tv-fold"), act = p("td.tv-acts button");
@@ -737,7 +962,6 @@
       lastWidth = width;
       const map = colByKey(); const idk = identityKey(); const identCol = map.get(idk);
       const fit = fitColumns(shown, width);
-      const sortCol = map.get(st.s_key);
       const identInRow = !!identCol && !fit.identAll && !fit.identLines;
       const ncols = Math.max(1, (identInRow ? 1 : 0) + fit.inRow.length + (fit.actsInRow ? 1 : 0));
       // E8 rule 7: fixed layout with shares of the measured widths; the table
@@ -797,23 +1021,39 @@
         return s;
       };
       if (!shown.length) h += '<tr><td colspan="' + ncols + '" class="tv-empty">Nothing here.</td></tr>';
-      else if (st.g_key !== "none" && map.has(st.g_key)) {
-        const gcol = map.get(st.g_key);
-        const groups = new Map();
-        shown.forEach((r, i) => { const k = String(r[gcol.key] ?? ""); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
-        const extreme = (idx) => { let best = null; for (const i of idx) { const v = shown[i][st.s_key]; if (isBlank(v)) continue; if (best === null || compareBy(sortCol, st.s_dir)(shown[i], shown[best]) < 0) best = i; } return best; };
-        const order = [...groups.entries()].sort((a, b) => { const x = extreme(a[1]), y = extreme(b[1]); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return compareBy(sortCol, st.s_dir)(shown[x], shown[y]); });
-        for (const [gk, idx] of order) {
+      else if (st.g_key !== "none" && map.has(st.g_key) && groupingFor(st.g_key, st.g_fine, shown)) {
+        // E6 with the then-group (d9 a): outer headers fold as before; under an
+        // open outer group the inner headers sit indented, each closed until
+        // tapped (d16 a). Groups at both levels order by their extreme row
+        // under the sort and then-sort; a group with no sort value goes last.
+        const outerG = groupingFor(st.g_key, st.g_fine, shown);
+        const innerG = st.g2_key !== "none" && st.g2_key !== st.g_key && map.has(st.g2_key) ? groupingFor(st.g2_key, st.g2_fine, shown) : null;
+        const cmp = rowCompare();
+        const collect = (idx, g) => { const m = new Map(); for (const i of idx) { const k = g.of(shown[i]); if (!m.has(k)) m.set(k, []); m.get(k).push(i); } return m; };
+        const extreme = (idx) => { let best = null; for (const i of idx) { if (isBlank(shown[i][st.s_key])) continue; if (best === null || cmp(shown[i], shown[best]) < 0) best = i; } return best; };
+        const ordered = (m) => [...m.entries()].sort((a, b) => { const x = extreme(a[1]), y = extreme(b[1]); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return cmp(shown[x], shown[y]); });
+        const rowsWord = (n) => n.toLocaleString() + (n === 1 ? " row" : " rows");
+        for (const [gk, idx] of ordered(collect(shown.map((_, i) => i), outerG))) {
           const closed = st.foldMode === "closed" ? !st.foldExceptions.has(gk) : st.foldExceptions.has(gk);
-          h += '<tr class="tv-group"><td colspan="' + ncols + '"><button type="button" data-g="' + esc(gk) + '">' + (closed ? "▸" : "▾") + "</button>" + esc(gk === "" ? "(blank)" : gk) + ' <span style="font-weight:400">· ' + idx.length + (idx.length === 1 ? " row" : " rows") + "</span></td></tr>";
-          if (!closed) for (const i of idx) h += rowHtml(shown[i], i);
+          const inner = innerG ? ordered(collect(idx, innerG)) : null;
+          h += '<tr class="tv-group"><td colspan="' + ncols + '"><button type="button" data-g="' + esc(gk) + '" aria-expanded="' + !closed + '">' + (closed ? "▸" : "▾") + "</button>" + esc(gk) +
+            ' <span style="font-weight:400">· ' + rowsWord(idx.length) + (inner ? " · " + inner.length + (inner.length === 1 ? " group" : " groups") : "") + "</span></td></tr>";
+          if (closed) continue;
+          if (!inner) { for (const i of idx) h += rowHtml(shown[i], i); continue; }
+          for (const [ik, iidx] of inner) {
+            const ikey = gk + "\u0001" + ik, open = st.innerOpen.has(ikey);
+            h += '<tr class="tv-group tv-group2"><td colspan="' + ncols + '"><button type="button" data-g2="' + esc(ikey) + '" aria-expanded="' + open + '">' + (open ? "▾" : "▸") + "</button>" + esc(ik) +
+              ' <span style="font-weight:400">· ' + rowsWord(iidx.length) + "</span></td></tr>";
+            if (open) for (const i of iidx) h += rowHtml(shown[i], i);
+          }
         }
       } else shown.forEach((r, i) => { h += rowHtml(r, i); });
       h += "</tbody>";
       wrap.innerHTML = '<table class="tv-table">' + h + "</table>";
       const t = wrap.querySelector("table.tv-table");
       t.querySelectorAll("button.tv-fold").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); const i = Number(b.dataset.i); if (st.expanded.has(i)) st.expanded.delete(i); else st.expanded.add(i); renderTable(shown); }; });
-      t.querySelectorAll("tr.tv-group button").forEach((b) => { b.onclick = () => { const g = b.dataset.g; if (st.foldExceptions.has(g)) st.foldExceptions.delete(g); else st.foldExceptions.add(g); renderTable(shown); }; });
+      t.querySelectorAll("tr.tv-group button[data-g]").forEach((b) => { b.onclick = () => { const g = b.dataset.g; if (st.foldExceptions.has(g)) st.foldExceptions.delete(g); else st.foldExceptions.add(g); renderTable(shown); }; });
+      t.querySelectorAll("tr.tv-group2 button[data-g2]").forEach((b) => { b.onclick = () => { const g = b.dataset.g2; if (st.innerOpen.has(g)) st.innerOpen.delete(g); else st.innerOpen.add(g); renderTable(shown); }; });
       t.querySelectorAll("td.tv-clip, td.tv-over").forEach((td) => { td.onclick = (e) => { if (e.target.closest("button")) return; const k = td.dataset.i + ":" + td.dataset.k; if (st.openCells.has(k)) st.openCells.delete(k); else st.openCells.add(k); td.classList.toggle("open"); }; });
       t.querySelectorAll(".tv-acts").forEach((node) => { const r = shown[Number(node.dataset.i)]; for (const a of (spec.actions || [])) if (matches(a, r)) node.appendChild(actionButton(a, r, spec)); });
       return fit;
@@ -824,10 +1064,17 @@
       const parts = [];
       if (st.view && matchesView(st.view)) parts.push("view " + esc(st.view.name));   // E15.1 post: while the table shows the chosen view
       parts.push("<b>" + shown.length.toLocaleString() + "</b> shown of " + data.length.toLocaleString() + " rows");
+      // read-paging b: what the source holds, warn-coloured when fewer rows came
+      if (sourceCount !== null) parts.push((data.length < sourceCount ? '<span class="tv-mark-warn">' : "<span>") + data.length.toLocaleString() + " of " + sourceCount.toLocaleString() + " in the database</span>");
       for (const c of enumCols()) if (st.f[c.key] && st.f[c.key] !== "all") parts.push(esc(c.label) + " " + esc(st.f[c.key] === "" ? "(blank)" : st.f[c.key]));
       for (const c of numCols()) { const b = st.n[c.key]; if (!b) continue; if ((b.min ?? "") !== "") parts.push(esc(c.label) + " ≥ " + esc(b.min)); if ((b.max ?? "") !== "") parts.push(esc(c.label) + " ≤ " + esc(b.max)); }
       if (st.view && st.viewDropped.length) parts.push("view " + esc(st.view.name) + ": not applied: " + st.viewDropped.map(esc).join(", "));   // missing-column a, named once
-      if (st.g_key !== "none" && map.has(st.g_key)) parts.push("by " + esc(map.get(st.g_key).label));
+      if (st.g_key !== "none" && map.has(st.g_key)) {
+        const named = (k, fine) => { const g = groupCache.get(k + (fine ? FINE_TAG : "")); return esc(map.get(k).label) + (g ? " (" + esc(g.words) + ")" : ""); };
+        let by = "by " + named(st.g_key, st.g_fine);
+        if (st.g2_key !== "none" && st.g2_key !== st.g_key && map.has(st.g2_key)) by += ", then " + named(st.g2_key, st.g2_fine);
+        parts.push(by);
+      }
       // E11: the fit of the last render and its trigger, the table's width
       if (fit) {
         // E11: with every column cleared the fit reads as a plain statement, not "0 of 0"
@@ -843,15 +1090,18 @@
     function render() {
       const map = colByKey();
       if (!map.has(st.s_key)) { const d = defaultSort(); st.s_key = d.key; st.s_dir = d.dir; }
-      renderControls();
-      const shown = data.filter((r) => passesFilters(r, null)).sort(compareBy(map.get(st.s_key), st.s_dir));
+      if (st.s2_key !== "none" && (!map.has(st.s2_key) || st.s2_key === st.s_key)) st.s2_key = "none";
+      const shown = data.filter((r) => passesFilters(r, null)).sort(rowCompare());
+      groupCache = new Map();                                          // groupings follow the rows shown
+      renderControls(shown);
       let fit = renderTable(shown);
       if (fit && !calibrated && calibrate()) fit = renderTable(shown);
       renderCount(shown, fit);
     }
 
     // ----- saved views (E15): this table's side -----
-    const stateView = () => ({ f: st.f, n: st.n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden], g_key: st.g_key });
+    const stateView = () => ({ f: st.f, n: st.n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden], g_key: st.g_key,
+      g_fine: st.g_fine, g2_key: st.g2_key, g2_fine: st.g2_fine, s2_key: st.s2_key, s2_dir: st.s2_dir });
     const matchesView = (v) => !!v && canonicalView(v, colByKey()) === canonicalView(stateView(), colByKey());
     // What save view writes: the table's name and section, the module's state
     // version, and every saved variable of section D over the columns present.
@@ -859,7 +1109,8 @@
       const map = colByKey();
       const f = {}; for (const k of Object.keys(st.f)) if (st.f[k] && st.f[k] !== "all" && map.has(k)) f[k] = st.f[k];
       const n = {}; for (const k of Object.keys(st.n)) { const b = st.n[k] || {}; if (!map.has(k)) continue; const min = b.min == null ? "" : String(b.min), max = b.max == null ? "" : String(b.max); if (min !== "" || max !== "") n[k] = { min, max }; }
-      return { table: handle.tableName, section: spec.section, state_version: STATE_VERSION, f, n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden].filter((k) => map.has(k)), g_key: st.g_key || "none" };
+      return { table: handle.tableName, section: spec.section, state_version: STATE_VERSION, f, n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden].filter((k) => map.has(k)), g_key: st.g_key || "none",
+        g_fine: !!st.g_fine, g2_key: st.g2_key || "none", g2_fine: !!st.g2_fine, s2_key: st.s2_key || "none", s2_dir: st.s2_dir || "asc" };
     }
     // Restoring a view (ruling missing-column a): every setting naming a column
     // the table has applies; the rest are dropped and named once in the count
@@ -881,9 +1132,19 @@
       st.hidden = new Set();
       for (const k of (v.hidden || [])) { if (map.has(k)) st.hidden.add(k); else dropped.push(nameOf(k) + " hidden"); }
       for (const c of cols) st.seen.add(c.key);
-      const g = v.g_key || "none"; const gc = map.get(g);
-      if (g === "none") st.g_key = "none"; else if (gc && gc.kind === "enum") st.g_key = g; else { st.g_key = "none"; dropped.push("group by " + nameOf(g)); }
-      st.foldExceptions.clear(); st.expanded.clear(); st.openCells.clear(); st.panel = null;
+      // every column groups now (group-by-scope-reach c); a view saved before the
+      // then-group and then-sort restores them as None
+      const g = v.g_key || "none";
+      if (g === "none") st.g_key = "none"; else if (map.has(g)) st.g_key = g; else { st.g_key = "none"; dropped.push("group by " + nameOf(g)); }
+      st.g_fine = st.g_key !== "none" && !!v.g_fine;
+      const g2 = v.g2_key || "none";
+      if (g2 === "none" || st.g_key === "none" || g2 === st.g_key) st.g2_key = "none"; else if (map.has(g2)) st.g2_key = g2; else { st.g2_key = "none"; dropped.push("then group by " + nameOf(g2)); }
+      st.g2_fine = st.g2_key !== "none" && !!v.g2_fine;
+      const s2 = v.s2_key || "none";
+      if (s2 === "none" || s2 === st.s_key) st.s2_key = "none"; else if (map.has(s2)) st.s2_key = s2; else { st.s2_key = "none"; dropped.push("then sort by " + nameOf(s2)); }
+      st.s2_dir = v.s2_dir === "desc" ? "desc" : "asc";
+      if (st.g_key !== "none") resetFold(); else { st.foldExceptions.clear(); st.innerOpen.clear(); }
+      st.expanded.clear(); st.openCells.clear(); st.panel = null;
       st.view = v; st.viewDropped = dropped;
       persist(true); render();
       return dropped;
@@ -905,13 +1166,13 @@
 
     return Object.assign(handle, {
       state: st,
-      update(newRows) { data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(true); render(); },
+      update(newRows, newMeta) { if (newMeta && Number.isFinite(newMeta.sourceCount)) sourceCount = newMeta.sourceCount; data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(true); render(); },
       destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); renderers.delete(render); if (mounts.get(handle.tableName) === handle) mounts.delete(handle.tableName); el.innerHTML = ""; el.classList.remove("tv"); },
       snapshotView, applyView, markView, forgetView, matchesView,
     });
   }
 
-  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, mountViewsTblVwr, inferColumns, inferKind };
+  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, mountViewsTblVwr, inferColumns, inferKind, groupingOf };
   window.mountTable = mountTable;
   window.mountViewsTblVwr = mountViewsTblVwr;
 })();
