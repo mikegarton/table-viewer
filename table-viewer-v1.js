@@ -18,6 +18,18 @@
    group-viability a of 2026-10-27): groupingOf picks each column's form, by
    value, letter ranges, value bands or periods, and grades it by the number of
    groups and the rows per group; Sort carries a then-sort for ties (d17 b).
+   Groups by letters, period or bands take their own order, whatever the Sort
+   (0–9, A to Z, "other scripts", "#"; periods oldest first; bands low to high;
+   the blank group last), at both levels, rows inside keeping the table's sort;
+   groups by value order by their extreme row under the Sort (rulings
+   letter-group-order b and group-other-scripts a of 2026-10-29).
+   A text column sorts, and its letter groups form, on one key (sortKeyTblVwr):
+   the text from its first letter or digit, accents folded and Latin letters
+   NFD leaves whole (Ø, Æ, Œ, Ł, ß, Đ, Þ, Ħ, ı ...) folded to their base letters,
+   so " Neurosurgical" sorts under N and "@ Ascent" under A; a value with no
+   letter or digit sorts after the lettered values and before the blanks
+   (rulings text-sort-symbols a and latin-fold-extended a of 2026-10-29).
+   Filters, display and the find box keep the raw text.
    TableViewer.actionButton(action, row, spec) -> button element, the same guard
    mechanics for a page's own rows (the ops page's Limits campaign rows).
    TableViewer.mountTextSize(container) -> the A− A+ text-size pair (E14), once
@@ -259,6 +271,34 @@
     if (col.kind === "bool") { const b = asBool(v); return b === null ? String(v) : b ? "yes" : "no"; }
     return asText(v);
   }
+  // The one key a text column sorts and groups on (rulings text-sort-symbols a
+  // and latin-fold-extended a, 2026-10-29): the text from its first letter or
+  // digit, accents folded as NFD decomposes them, and the Latin letters NFD
+  // leaves whole folded to their base letters. null when the value holds no
+  // letter or digit. Display, filters and the find box keep the raw text.
+  const LETTER = /[\p{L}\p{N}]/u;
+  const LATIN_FOLD = {
+    "Ø": "O", "ø": "o", "Æ": "AE", "æ": "ae", "Œ": "OE", "œ": "oe", "Ł": "L", "ł": "l",
+    "ß": "SS", "ẞ": "SS", "Đ": "D", "đ": "d", "Ð": "D", "ð": "d", "Þ": "TH", "þ": "th",
+    "Ħ": "H", "ħ": "h", "ı": "i", "Ŧ": "T", "ŧ": "t", "Ŋ": "N", "ŋ": "n", "ĸ": "k",
+    "Ŀ": "L", "ŀ": "l", "ŉ": "n", "ſ": "s", "Ĳ": "IJ", "ĳ": "ij",
+    "Ɓ": "B", "ƀ": "b", "Ƀ": "B", "Ƈ": "C", "ƈ": "c", "Ɗ": "D", "Ɖ": "D", "Ƒ": "F", "ƒ": "f",
+    "Ɠ": "G", "Ǥ": "G", "ǥ": "g", "Ɨ": "I", "Ƙ": "K", "ƙ": "k", "Ƚ": "L", "ƚ": "l", "Ɲ": "N",
+    "Ƥ": "P", "ƥ": "p", "Ƭ": "T", "ƭ": "t", "Ʈ": "T", "Ʋ": "V", "Ƴ": "Y", "ƴ": "y", "Ƶ": "Z", "ƶ": "z",
+    "Ⱥ": "A", "ⱥ": "a", "Ȼ": "C", "ȼ": "c", "Ɇ": "E", "ɇ": "e", "Ɉ": "J", "ɉ": "j", "Ɍ": "R", "ɍ": "r", "Ɏ": "Y", "ɏ": "y"
+  };
+  const LATIN_FOLD_RE = new RegExp("[" + Object.keys(LATIN_FOLD).join("") + "]", "g");
+  const sortKeyCache = new Map();
+  function sortKeyTblVwr(v) {
+    const raw = asText(v);
+    if (sortKeyCache.has(raw)) return sortKeyCache.get(raw);
+    const s = raw.normalize("NFD").replace(/\p{M}/gu, "").replace(LATIN_FOLD_RE, (c) => LATIN_FOLD[c]);   // É sorts as E, Ø as O
+    const i = s.search(LETTER);
+    const key = i < 0 ? null : s.slice(i);
+    if (sortKeyCache.size > 20000) sortKeyCache.clear();
+    sortKeyCache.set(raw, key);
+    return key;
+  }
   function compareBy(col, dir) {
     const sign = dir === "asc" ? 1 : -1;
     return (a, b) => {
@@ -268,7 +308,13 @@
       if (col.kind === "number") return sign * ((asNumber(x) ?? 0) - (asNumber(y) ?? 0));
       if (col.kind === "date") return sign * ((asDate(x) ?? 0) - (asDate(y) ?? 0));
       if (col.kind === "bool") return sign * ((asBool(x) ? 1 : 0) - (asBool(y) ? 1 : 0));
-      return sign * String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" });
+      // text: by the shared key (leading spaces, punctuation, symbols and emoji
+      // ignored); a value with no letter or digit after every lettered one, in both
+      // directions, before the blanks (text-sort-symbols a)
+      const kx = sortKeyTblVwr(x), ky = sortKeyTblVwr(y), opt = { numeric: true, sensitivity: "base" };
+      if (kx === null && ky === null) return String(x).localeCompare(String(y), undefined, opt);
+      if (kx === null) return 1; if (ky === null) return -1;
+      return sign * kx.localeCompare(ky, undefined, opt);
     };
   }
 
@@ -282,12 +328,22 @@
   //   value bands  numbers: equal-count bands of a 1, 2 or 5 x 10^k row count,
   //                tied values kept in one band, zero a band of its own when it
   //                holds ZERO_BAND_MIN_SHARE of the values (d4 a);
-  //   letters      text and ids by the first letter or digit, accents and
-  //                leading punctuation set aside, thin neighbours merged into
-  //                ranges so no more than GROUPS_GOOD_MAX groups (d3 b).
+  //   letters      text and ids by the first letter or digit (the sort key, so
+  //                the groups and the rows' sort agree), accents and leading
+  //                punctuation, symbols and emoji set aside, Ø, Æ, Œ, Ł, ß, Đ, Þ,
+  //                Ħ, ı and kin folded to their base letters (d39 latin-fold-extended
+  //                a), thin neighbours merged into
+  //                ranges so no more than GROUPS_GOOD_MAX groups (d3 b); letters
+  //                that are not Latin A to Z form one group, "other scripts"
+  //                (d32 group-other-scripts a).
+  // Group order (d31 letter-group-order b, 2026-10-29): letters, periods and
+  // bands order their own groups, whatever the Sort: 0–9, A to Z, other scripts,
+  // "#"; periods oldest first; bands low to high; the blank group last. Groups
+  // by value order by their extreme row under the Sort (group-order-rule a).
   // finer aims at FINER_FACTOR times the groups (d4 a: an order of magnitude
   // smaller groups). The grade reads the group count and the rows per group.
   const BLANK_GROUP = "(blank)";
+  const OTHER_SCRIPTS_GROUP = "other scripts";   // d32 group-other-scripts a: every letter that is not Latin A to Z, one group
   const PERIODLIKE = /^\d{4}(-\d{2})?$/;
   function gradeOf(groups, rows) {
     if (groups >= GROUPS_GOOD_MIN && groups <= GROUPS_GOOD_MAX && rows / groups >= ROWS_PER_GROUP_MIN) return "good";
@@ -311,7 +367,9 @@
     const grains = ["day", "month", "year"].filter((g) => vals.some((v) => periodOf(v, g) !== null) && vals.every((v) => periodOf(v, g) !== null));
     let grain = grains[grains.length - 1] || "year";
     for (const g of grains) { if (new Set(vals.map((v) => periodOf(v, g))).size <= maxGroups) { grain = g; break; } }
-    return { words: "by " + grain, of: (r) => { const v = r[col.key]; return isBlank(v) ? BLANK_GROUP : periodOf(v, grain) || asText(v); } };
+    // periods run oldest first, the blank group last (d31 letter-group-order b)
+    const order = (a, b) => (a === BLANK_GROUP) - (b === BLANK_GROUP) || a.localeCompare(b, undefined, { numeric: true });
+    return { words: "by " + grain, order, of: (r) => { const v = r[col.key]; return isBlank(v) ? BLANK_GROUP : periodOf(v, grain) || asText(v); } };
   }
   function byBands(col, rows, maxGroups) {
     const nums = rows.map((r) => asNumber(r[col.key])).filter((n) => n !== null).sort((a, b) => a - b);
@@ -335,18 +393,23 @@
       while (lo < hi) { const m = (lo + hi) >> 1; if (bands[m].hi >= n) hi = m; else lo = m + 1; }
       return bands.length ? name(bands[lo]) : BLANK_GROUP;
     };
-    return { words: "bands of ~" + size.toLocaleString() + (size === 1 ? " row" : " rows"), of };
+    // bands run low to high, the zero band at zero, the blank group last (d31 letter-group-order b)
+    const place = new Map(bands.map((b) => [name(b), b.lo]));
+    if (zeroBand) place.set(fmtNumber(col, 0), 0);
+    const order = (a, b) => (a === BLANK_GROUP) - (b === BLANK_GROUP) || (place.get(a) ?? 0) - (place.get(b) ?? 0);
+    return { words: "bands of ~" + size.toLocaleString() + (size === 1 ? " row" : " rows"), order, of };
   }
-  const LETTER = /[\p{L}\p{N}]/u;
   function letterUnit(v, len) {
-    const s = asText(v).normalize("NFD").replace(/\p{M}/gu, "");   // É sorts as E
-    const i = s.search(LETTER); if (i < 0) return "#";
+    const s = sortKeyTblVwr(v); if (s === null) return "#";        // the shared sort key: É is E, Ø is O, leading symbols skipped
+    const i = 0;
     if (/\p{N}/u.test(s[i])) return "0–9";
-    let u = s[i].toUpperCase();
-    if (len > 1 && s[i + 1] && LETTER.test(s[i + 1])) u += s[i + 1].toLowerCase();
+    const u = s[i].toUpperCase();
+    if (!/^[A-Z]$/.test(u)) return OTHER_SCRIPTS_GROUP;            // Cyrillic, Han, Greek, Arabic ... (d32 group-other-scripts a)
+    const n = s[i + 1];                                            // a second letter must itself be a digit or Latin A to Z
+    if (len > 1 && n && LETTER.test(n) && (/\p{N}/u.test(n) || /^[A-Za-z]$/.test(n))) return u + n.toLowerCase();
     return u;
   }
-  const unitRank = (u) => u === "0–9" ? 0 : u === "#" ? 3 : /^[A-Z]/.test(u) ? 1 : 2;
+  const unitRank = (u) => u === "0–9" ? 0 : u === "#" ? 3 : u === OTHER_SCRIPTS_GROUP ? 2 : 1;
   function byLetters(col, rows, maxGroups, finer) {
     const vals = rows.map((r) => r[col.key]).filter((v) => !isBlank(v));
     const countUnits = (len) => { const m = new Map(); for (const v of vals) { const u = letterUnit(v, len); m.set(u, (m.get(u) || 0) + 1); } return m; };
@@ -366,7 +429,10 @@
       run.push(u); acc += counts.get(u);
       if (acc >= target || i === units.length - 1) close();
     });
-    return { words: len > 1 ? "two letters" : "letters", of: (r) => { const v = r[col.key]; return isBlank(v) ? BLANK_GROUP : groupOf.get(letterUnit(v, len)) || "#"; } };
+    // the groups' own order: 0–9, the letters A to Z, other scripts, "#", the blank group last (d31 letter-group-order b)
+    const place = new Map(); units.forEach((u, i) => { if (!place.has(groupOf.get(u))) place.set(groupOf.get(u), i); });
+    const at = (g) => g === BLANK_GROUP ? units.length + 1 : place.has(g) ? place.get(g) : units.length;
+    return { words: len > 1 ? "two letters" : "letters", order: (a, b) => at(a) - at(b), of: (r) => { const v = r[col.key]; return isBlank(v) ? BLANK_GROUP : groupOf.get(letterUnit(v, len)) || "#"; } };
   }
   function groupingOf(col, rows, finer) {
     const vals = rows.map((r) => r[col.key]).filter((v) => !isBlank(v));
@@ -959,8 +1025,11 @@
 
     // ----- grouped order (E6, d9 a) -----
     // The groups of the rows shown, in the order the table draws them: outer
-    // groups, and inside each the inner groups, both ordered by their extreme
-    // row under the sort and then-sort, a group with no sort value last. Each
+    // groups, and inside each the inner groups, both in the order of their form
+    // (letters 0–9, A to Z, other scripts, "#"; periods oldest first; bands low
+    // to high; the blank group last: d31 letter-group-order b), or, grouped
+    // by value, by their extreme row under the sort and then-sort, a group with
+    // no sort value last (group-order-rule a). Each
     // entry holds the group's label, its row indexes into shown, and its inner
     // groups as [label, indexes] pairs (null with no then-group). null when the
     // table is not grouped. renderTable and shownRowsTblVwr both read it.
@@ -972,8 +1041,9 @@
       const cmp = rowCompare();
       const collect = (idx, g) => { const m = new Map(); for (const i of idx) { const k = g.of(shown[i]); if (!m.has(k)) m.set(k, []); m.get(k).push(i); } return m; };
       const extreme = (idx) => { let best = null; for (const i of idx) { if (isBlank(shown[i][st.s_key])) continue; if (best === null || cmp(shown[i], shown[best]) < 0) best = i; } return best; };
-      const ordered = (m) => [...m.entries()].sort((a, b) => { const x = extreme(a[1]), y = extreme(b[1]); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return cmp(shown[x], shown[y]); });
-      return ordered(collect(shown.map((_, i) => i), outerG)).map(([gk, idx]) => ({ gk, idx, inner: innerG ? ordered(collect(idx, innerG)) : null }));
+      // letters, periods and bands take their own order, whatever the Sort; by value orders by the extreme row
+      const ordered = (m, g) => [...m.entries()].sort((a, b) => { if (g.order) return g.order(a[0], b[0]); const x = extreme(a[1]), y = extreme(b[1]); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return cmp(shown[x], shown[y]); });
+      return ordered(collect(shown.map((_, i) => i), outerG), outerG).map(([gk, idx]) => ({ gk, idx, inner: innerG ? ordered(collect(idx, innerG), innerG) : null }));
     }
     // The rows that pass the filters and bounds, in the order the table shows
     // them (tts-audio-ops, 2026-10-29): the sort and then-sort, or, grouped, the
