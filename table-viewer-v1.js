@@ -3,13 +3,17 @@
    (draft 10: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
    cited by slug). Section letters below cite it.
 
-   mountTable(container, rows, spec, meta) -> { update(rows, meta), state, destroy() }
+   mountTable(container, rows, spec, meta) -> { update(rows, meta), state, destroy(), shownRowsTblVwr() }
      container: element. rows: array of row objects. spec (optional, section B):
        name, identity, sort {key, dir}, site, columns [{key, label, unit, decimals,
        kind, text, visible, render, mark}], actions [{label, when, route, method,
        payload, guard, done, input}], request(action, row, body), afterAction(...).
      meta (optional): { sourceCount }, the rows the source holds, so the count
        line shows a read that came back short (ruling read-paging b, 2026-10-28).
+     shownRowsTblVwr() returns the row objects that pass the table's filters and
+       bounds, in the order the table shows them under its sort, then-sort and
+       grouping, rows in folded groups included at their group's place (the
+       ops page's play in table order, 2026-10-29).
    Group and then-group offer every column (rulings group-by-scope-reach c and
    group-viability a of 2026-10-27): groupingOf picks each column's form, by
    value, letter ranges, value bands or periods, and grades it by the number of
@@ -953,6 +957,38 @@
       return true;
     }
 
+    // ----- grouped order (E6, d9 a) -----
+    // The groups of the rows shown, in the order the table draws them: outer
+    // groups, and inside each the inner groups, both ordered by their extreme
+    // row under the sort and then-sort, a group with no sort value last. Each
+    // entry holds the group's label, its row indexes into shown, and its inner
+    // groups as [label, indexes] pairs (null with no then-group). null when the
+    // table is not grouped. renderTable and shownRowsTblVwr both read it.
+    function groupLayout(shown) {
+      const map = colByKey();
+      if (!(st.g_key !== "none" && map.has(st.g_key) && groupingFor(st.g_key, st.g_fine, shown))) return null;
+      const outerG = groupingFor(st.g_key, st.g_fine, shown);
+      const innerG = st.g2_key !== "none" && st.g2_key !== st.g_key && map.has(st.g2_key) ? groupingFor(st.g2_key, st.g2_fine, shown) : null;
+      const cmp = rowCompare();
+      const collect = (idx, g) => { const m = new Map(); for (const i of idx) { const k = g.of(shown[i]); if (!m.has(k)) m.set(k, []); m.get(k).push(i); } return m; };
+      const extreme = (idx) => { let best = null; for (const i of idx) { if (isBlank(shown[i][st.s_key])) continue; if (best === null || cmp(shown[i], shown[best]) < 0) best = i; } return best; };
+      const ordered = (m) => [...m.entries()].sort((a, b) => { const x = extreme(a[1]), y = extreme(b[1]); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return cmp(shown[x], shown[y]); });
+      return ordered(collect(shown.map((_, i) => i), outerG)).map(([gk, idx]) => ({ gk, idx, inner: innerG ? ordered(collect(idx, innerG)) : null }));
+    }
+    // The rows that pass the filters and bounds, in the order the table shows
+    // them (tts-audio-ops, 2026-10-29): the sort and then-sort, or, grouped, the
+    // groups' order with the sort inside each; rows in a folded group are
+    // included, at their group's place. A page plays or exports "the table as
+    // it stands" from this.
+    function shownRowsTblVwr() {
+      const map = colByKey();
+      if (!map.has(st.s_key)) return [];
+      const shown = data.filter((r) => passesFilters(r, null)).sort(rowCompare());
+      const layout = groupLayout(shown);
+      if (!layout) return shown;
+      return layout.flatMap(({ idx, inner }) => (inner ? inner.flatMap(([, iidx]) => iidx) : idx).map((i) => shown[i]));
+    }
+
     // ----- table (E6, E8, E9, E10, E12) -----
     let lastWidth = 0;
     function renderTable(shown) {
@@ -962,6 +998,7 @@
       lastWidth = width;
       const map = colByKey(); const idk = identityKey(); const identCol = map.get(idk);
       const fit = fitColumns(shown, width);
+      const layout = groupLayout(shown);
       const identInRow = !!identCol && !fit.identAll && !fit.identLines;
       const ncols = Math.max(1, (identInRow ? 1 : 0) + fit.inRow.length + (fit.actsInRow ? 1 : 0));
       // E8 rule 7: fixed layout with shares of the measured widths; the table
@@ -1021,21 +1058,13 @@
         return s;
       };
       if (!shown.length) h += '<tr><td colspan="' + ncols + '" class="tv-empty">Nothing here.</td></tr>';
-      else if (st.g_key !== "none" && map.has(st.g_key) && groupingFor(st.g_key, st.g_fine, shown)) {
+      else if (layout) {
         // E6 with the then-group (d9 a): outer headers fold as before; under an
         // open outer group the inner headers sit indented, each closed until
-        // tapped (d16 a). Groups at both levels order by their extreme row
-        // under the sort and then-sort; a group with no sort value goes last.
-        const outerG = groupingFor(st.g_key, st.g_fine, shown);
-        const innerG = st.g2_key !== "none" && st.g2_key !== st.g_key && map.has(st.g2_key) ? groupingFor(st.g2_key, st.g2_fine, shown) : null;
-        const cmp = rowCompare();
-        const collect = (idx, g) => { const m = new Map(); for (const i of idx) { const k = g.of(shown[i]); if (!m.has(k)) m.set(k, []); m.get(k).push(i); } return m; };
-        const extreme = (idx) => { let best = null; for (const i of idx) { if (isBlank(shown[i][st.s_key])) continue; if (best === null || cmp(shown[i], shown[best]) < 0) best = i; } return best; };
-        const ordered = (m) => [...m.entries()].sort((a, b) => { const x = extreme(a[1]), y = extreme(b[1]); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return cmp(shown[x], shown[y]); });
+        // tapped (d16 a). The groups' order is groupLayout's.
         const rowsWord = (n) => n.toLocaleString() + (n === 1 ? " row" : " rows");
-        for (const [gk, idx] of ordered(collect(shown.map((_, i) => i), outerG))) {
+        for (const { gk, idx, inner } of layout) {
           const closed = st.foldMode === "closed" ? !st.foldExceptions.has(gk) : st.foldExceptions.has(gk);
-          const inner = innerG ? ordered(collect(idx, innerG)) : null;
           h += '<tr class="tv-group"><td colspan="' + ncols + '"><button type="button" data-g="' + esc(gk) + '" aria-expanded="' + !closed + '">' + (closed ? "▸" : "▾") + "</button>" + esc(gk) +
             ' <span style="font-weight:400">· ' + rowsWord(idx.length) + (inner ? " · " + inner.length + (inner.length === 1 ? " group" : " groups") : "") + "</span></td></tr>";
           if (closed) continue;
@@ -1168,7 +1197,7 @@
       state: st,
       update(newRows, newMeta) { if (newMeta && Number.isFinite(newMeta.sourceCount)) sourceCount = newMeta.sourceCount; data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(true); render(); },
       destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); renderers.delete(render); if (mounts.get(handle.tableName) === handle) mounts.delete(handle.tableName); el.innerHTML = ""; el.classList.remove("tv"); },
-      snapshotView, applyView, markView, forgetView, matchesView,
+      snapshotView, applyView, markView, forgetView, matchesView, shownRowsTblVwr,
     });
   }
 
