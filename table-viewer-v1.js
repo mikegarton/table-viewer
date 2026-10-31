@@ -3,7 +3,7 @@
    (draft 10: Mike's rulings d1 to d39 of 2026-09-22 and the later rulings
    cited by slug). Section letters below cite it.
 
-   mountTable(container, rows, spec, meta) -> { update(rows, meta), state, destroy(), shownRowsTblVwr() }
+   mountTable(container, rows, spec, meta) -> { update(rows, meta), state, destroy(), shownRowsTblVwr(), summaryTblVwr(), foldTblVwr() }
      container: element. rows: array of row objects. spec (optional, section B):
        name, identity, sort {key, dir}, site, columns [{key, label, unit, decimals,
        kind, text, visible, render, mark}], actions [{label, when, route, method,
@@ -14,6 +14,15 @@
        bounds, in the order the table shows them under its sort, then-sort and
        grouping, rows in folded groups included at their group's place (the
        ops page's play in table order, 2026-10-29).
+     summaryTblVwr() returns { name, shown, rows, filters, order, group, grouped,
+       folded }, the wordings the page's focus strip shows (E16); foldTblVwr() is
+       the fold chip's action (E7).
+   TableViewer.onRenderTblVwr(fn) calls fn(handle) after every render of any
+     mounted table and returns the function that stops it (E16). A page that
+     sets the class tv-focus on its document element hides every table's
+     control rows, panels and count line (E16, ruling ops-focus-strip a).
+   Control rows are one line each, dragged sideways with a finger, no
+   scrollbar (F.2, ruling tv-control-rows-drag a, 2026-10-30).
    Group and then-group offer every column (rulings group-by-scope-reach c and
    group-viability a of 2026-10-27): groupingOf picks each column's form, by
    value, letter ranges, value bands or periods, and grades it by the number of
@@ -86,10 +95,13 @@
       --tv-accent: var(--accent, #5aa8f0); --tv-gold: var(--gold, #e0b34e); --tv-bad: var(--bad, #e25555);
       --tv-good: var(--good, #6fc48d); --tv-dim: var(--dim, #bfe3ff); }
 .tv * { box-sizing: border-box; }
-.tv-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 4px 0; }   /* wraps, never scrolls sideways (spec F, G) */
-.tv-ctl { display: flex; flex-direction: column; gap: 2px; flex: none; }
+.tv-row { display: flex; flex-wrap: nowrap; gap: 8px; align-items: flex-end; padding: 4px 0;
+          overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }   /* one line, finger drag, no scrollbar (F.2, tv-control-rows-drag a) */
+.tv-row::-webkit-scrollbar { display: none; }
+.tv-row > * { flex: none; }
+.tv-ctl { display: flex; flex-direction: column; gap: 2px; flex: none; max-width: 100%; }
 .tv-ctl label { font-size: 16px; color: var(--tv-dim); white-space: nowrap; }
-.tv-ctl select { max-width: min(60vw, 18em); }
+.tv-ctl select { max-width: min(60vw, 18em, 100%); }   /* 100%: under the page's text size (E14) 60vw is zoomed past the row's width (G) */
 .tv select, .tv button, .tv input { font: inherit; color: var(--ink, #e8e8e6); background: var(--tv-card);
       border: 1px solid var(--tv-line); border-radius: 8px; padding: 6px 8px; min-height: 40px; }
 .tv button { cursor: pointer; white-space: nowrap; }
@@ -125,7 +137,7 @@
 .tv-table tr.tv-group td { text-align: left; color: var(--tv-accent); font-weight: 700; padding-top: 14px; background: var(--tv-card2); }
 .tv-table tr.tv-group td button { min-height: 32px; padding: 2px 8px; margin-right: 8px; }
 .tv-table tr.tv-group2 td { padding-left: 28px; padding-top: 8px; font-weight: 600; background: var(--tv-card); }   /* the inner level (d9 a), indented under its outer group */
-.tv-find { margin-top: 4px; max-width: min(60vw, 18em); }
+.tv-find { margin-top: 4px; max-width: min(60vw, 18em, 100%); }
 .tv-table tr.tv-foldline td { text-align: left; white-space: normal; background: var(--tv-card2); border-bottom: 1px solid var(--tv-line); }
 .tv-table tr.tv-foldline .tv-field { display: block; padding: 2px 0; overflow-wrap: break-word; }
 .tv-table tr.tv-foldline .tv-field b { color: var(--tv-dim); font-weight: 600; margin-right: 6px; }
@@ -145,8 +157,9 @@
 .tv-textsize { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; flex: none; }
 .tv-textsize button { min-width: 44px; }
 .tv-views { display: contents; }   /* E15: the label and the three widgets are the page's row 0's own items, at its height, wrapping one by one, never scrolling (G) */
-.tv-views select { max-width: min(60vw, 18em); }
+.tv-views select { max-width: min(60vw, 18em, 100%); }
 .tv-views button.armed { border-color: var(--tv-bad); color: var(--tv-bad); }
+.tv-focus .tv-row, .tv-focus .tv-panel.open, .tv-focus .tv-panel, .tv-focus .tv-count { display: none; }   /* E16: the page's focus strip folds every table's controls */
 `;
   let cssDone = false;
   function ensureCss() {
@@ -528,6 +541,8 @@
   // body, as the nugget viewer applies it, when this file loads, so the first
   // fit of every table is taken at the saved size.
   const renderers = new Set();                                    // every mounted table's render
+  const renderListeners = new Set();                              // E16: told after each render, the page's focus strip
+  function onRenderTblVwr(fn) { renderListeners.add(fn); return () => renderListeners.delete(fn); }
   const textScaleKey = () => "tv:" + (typeof location !== "undefined" ? location.pathname : "page") + ":text_scale";
   let textScale = 1;
   function loadTextScale() {
@@ -1158,6 +1173,23 @@
       return fit;
     }
 
+    // The filter and bound wordings and the group wording, plain text; the count
+    // line (E11) and the focus strip (E16) word them alike.
+    function filterWords() {
+      const out = [];
+      for (const c of enumCols()) if (st.f[c.key] && st.f[c.key] !== "all") out.push(c.label + " " + (st.f[c.key] === "" ? "(blank)" : st.f[c.key]));
+      for (const c of numCols()) { const b = st.n[c.key]; if (!b) continue; if ((b.min ?? "") !== "") out.push(c.label + " ≥ " + b.min); if ((b.max ?? "") !== "") out.push(c.label + " ≤ " + b.max); }
+      return out;
+    }
+    function groupWords() {
+      const map = colByKey();
+      if (st.g_key === "none" || !map.has(st.g_key)) return "";
+      const named = (k, fine) => { const g = groupCache.get(k + (fine ? FINE_TAG : "")); return map.get(k).label + (g ? " (" + g.words + ")" : ""); };
+      let by = "by " + named(st.g_key, st.g_fine);
+      if (st.g2_key !== "none" && st.g2_key !== st.g_key && map.has(st.g2_key)) by += ", then " + named(st.g2_key, st.g2_fine);
+      return by;
+    }
+    let lastShown = 0;
     function renderCount(shown, fit) {
       const map = colByKey();
       const parts = [];
@@ -1165,15 +1197,9 @@
       parts.push("<b>" + shown.length.toLocaleString() + "</b> shown of " + data.length.toLocaleString() + " rows");
       // read-paging b: what the source holds, warn-coloured when fewer rows came
       if (sourceCount !== null) parts.push((data.length < sourceCount ? '<span class="tv-mark-warn">' : "<span>") + data.length.toLocaleString() + " of " + sourceCount.toLocaleString() + " in the database</span>");
-      for (const c of enumCols()) if (st.f[c.key] && st.f[c.key] !== "all") parts.push(esc(c.label) + " " + esc(st.f[c.key] === "" ? "(blank)" : st.f[c.key]));
-      for (const c of numCols()) { const b = st.n[c.key]; if (!b) continue; if ((b.min ?? "") !== "") parts.push(esc(c.label) + " ≥ " + esc(b.min)); if ((b.max ?? "") !== "") parts.push(esc(c.label) + " ≤ " + esc(b.max)); }
+      for (const w of filterWords()) parts.push(esc(w));
       if (st.view && st.viewDropped.length) parts.push("view " + esc(st.view.name) + ": not applied: " + st.viewDropped.map(esc).join(", "));   // missing-column a, named once
-      if (st.g_key !== "none" && map.has(st.g_key)) {
-        const named = (k, fine) => { const g = groupCache.get(k + (fine ? FINE_TAG : "")); return esc(map.get(k).label) + (g ? " (" + esc(g.words) + ")" : ""); };
-        let by = "by " + named(st.g_key, st.g_fine);
-        if (st.g2_key !== "none" && st.g2_key !== st.g_key && map.has(st.g2_key)) by += ", then " + named(st.g2_key, st.g2_fine);
-        parts.push(by);
-      }
+      const by = groupWords(); if (by) parts.push(esc(by));
       // E11: the fit of the last render and its trigger, the table's width
       if (fit) {
         // E11: with every column cleared the fit reads as a plain statement, not "0 of 0"
@@ -1196,7 +1222,19 @@
       let fit = renderTable(shown);
       if (fit && !calibrated && calibrate()) fit = renderTable(shown);
       renderCount(shown, fit);
+      lastShown = shown.length;
+      for (const l of renderListeners) l(handle);
     }
+    // E16: what the page's focus strip shows of this table, and the fold chip's action.
+    function summaryTblVwr() {
+      const map = colByKey();
+      const dir = (d) => d === "asc" ? "▲" : "▼";
+      let order = "sort " + (map.has(st.s_key) ? map.get(st.s_key).label : st.s_key) + " " + dir(st.s_dir);
+      if (st.s2_key !== "none" && map.has(st.s2_key)) order += ", then " + map.get(st.s2_key).label + " " + dir(st.s2_dir);
+      return { name: handle.tableName, shown: lastShown, rows: data.length, filters: filterWords(), order, group: groupWords(),
+        grouped: st.g_key !== "none", folded: st.foldMode === "closed" };
+    }
+    function foldTblVwr() { if (st.g_key === "none") return; st.foldMode = st.foldMode === "closed" ? "open" : "closed"; st.foldExceptions.clear(); st.innerOpen.clear(); render(); }
 
     // ----- saved views (E15): this table's side -----
     const stateView = () => ({ f: st.f, n: st.n, s_key: st.s_key, s_dir: st.s_dir, hidden: [...st.hidden], g_key: st.g_key,
@@ -1267,11 +1305,11 @@
       state: st,
       update(newRows, newMeta) { if (newMeta && Number.isFinite(newMeta.sourceCount)) sourceCount = newMeta.sourceCount; data = Array.isArray(newRows) ? newRows.filter(Boolean) : []; cols = inferColumns(data, spec); for (const c of cols) if (!st.seen.has(c.key)) { st.seen.add(c.key); } st.expanded.clear(); st.openCells.clear(); persist(true); render(); },
       destroy() { window.removeEventListener("resize", onResize); if (ro) ro.disconnect(); renderers.delete(render); if (mounts.get(handle.tableName) === handle) mounts.delete(handle.tableName); el.innerHTML = ""; el.classList.remove("tv"); },
-      snapshotView, applyView, markView, forgetView, matchesView, shownRowsTblVwr,
+      snapshotView, applyView, markView, forgetView, matchesView, shownRowsTblVwr, summaryTblVwr, foldTblVwr,
     });
   }
 
-  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, mountViewsTblVwr, inferColumns, inferKind, groupingOf };
+  window.TableViewer = { version: VERSION, stateVersion: STATE_VERSION, mountTable, actionButton, mountTextSize, mountViewsTblVwr, onRenderTblVwr, inferColumns, inferKind, groupingOf };
   window.mountTable = mountTable;
   window.mountViewsTblVwr = mountViewsTblVwr;
 })();
